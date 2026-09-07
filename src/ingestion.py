@@ -22,15 +22,17 @@ from .utils import compute_file_checksum
 LOGGER = logging.getLogger("rag_knowledge_assistant.ingestion")
 
 # Regex nhận diện tiêu đề (Heading / Section Header) tiếng Việt và Markdown
+# Lưu ý: Pattern heading CHỈ kích hoạt khi dòng đứng riêng lẻ (đầu/cuối là khoảng trắng hoặc
+# xuống dòng). Điều này tránh match nhầm các cụm từ viết hoa ngắn nằm trong câu văn.
 HEADING_REGEX = re.compile(
-    r"^(?:"
+    r"(?:^|\n)\s*(?:"
     r"#{1,6}\s+.+|"  # Markdown headings (# Tiêu đề, ## Mục 1)
-    r"(?:\d+\.|\b(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\b\.?)\s+.+|"  # 1. Mục, I. Phần
-    r"Điều\s+\d+[:.]?.+|"  # Điều 1: ..., Điều 2.
-    r"CHƯƠNG\s+[IVXLCDM\d]+[:.]?.+|"  # CHƯƠNG I, CHƯƠNG 2
-    r"[A-ZÀ-Ỹ0-9\s\-_:]{4,80}$"  # Dòng viết hoa ngắn (CHÍNH SÁCH NGHỈ PHÉP)
-    r")",
-    flags=re.UNICODE | re.MULTILINE,
+    r"(?:\d+\.|\b(?:I|II|III|IV|V|VI|VII|VIII|IX|X)\b\.?)\s+[A-ZÀ-Ỹ].+|"  # 1. Mục, I. Phần (viết hoa đầu)
+    r"Điều\s+\d+[:.]?\s*.+|"  # Điều 1: ..., Điều 2.
+    r"CHƯƠNG\s+[IVXLCDM\d]+[:.]?\s*.+|"  # CHƯƠNG I, CHƯƠNG 2
+    r"[A-ZÀ-Ỹ][A-ZÀ-Ỹ0-9 \-_:]{3,79}$"  # Dòng viết hoa ngắn (CHÍNH SÁCH NGHỈ PHÉP)
+    r")\s*(?=\n|$)",
+    flags=re.UNICODE,
 )
 
 # Regex tách câu dựa trên dấu kết thúc (. ? !) theo sau bởi khoảng trắng và ký tự viết hoa
@@ -52,6 +54,9 @@ def generate_document_id(relative_path: Path | str) -> str:
     return hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:12]
 
 
+from dataclasses import dataclass, field
+
+
 @dataclass
 class Chunk:
     """Cấu trúc dữ liệu đại diện cho một đoạn văn bản (Chunk) sau khi phân tách.
@@ -68,6 +73,7 @@ class Chunk:
         section (Optional[str]): Tiêu đề phần/chương/mục chứa chunk.
         chunk_index (int): Chỉ số thứ tự của chunk trong tài liệu (0-indexed).
         content_hash (str): Mã băm SHA-256 của nội dung chunk.
+        security_scope (List[str]): Danh sách nhóm người dùng được phép truy cập chunk này (ACL).
     """
 
     chunk_id: str
@@ -81,6 +87,7 @@ class Chunk:
     section: str | None = None
     chunk_index: int = 0
     content_hash: str = ""
+    security_scope: list[str] = field(default_factory=lambda: ["public"])
 
     def __post_init__(self) -> None:
         """Tự động tính toán các trường metadata nếu chưa được cung cấp."""
@@ -92,6 +99,51 @@ class Chunk:
             self.source_path = self.source
         if not self.document_id and self.source_path:
             self.document_id = generate_document_id(self.source_path)
+        if not self.security_scope or self.security_scope == ["public"]:
+            scopes = ["public", "employee"]
+            lowered = (self.source_path or self.source).lower()
+            if "hr" in lowered or "leave" in lowered:
+                scopes.append("hr")
+            if "finance" in lowered or "expense" in lowered or "reimbursement" in lowered or "procurement" in lowered:
+                scopes.append("finance")
+            if "security" in lowered or "password" in lowered or "incident" in lowered:
+                scopes.append("security")
+            self.security_scope = scopes
+
+
+def check_document_quality(path: Path, raw_pages: list[tuple[str, int | None]]) -> tuple[bool, str]:
+    """Kiểm tra chất lượng văn bản trích xuất (Document Quality Gate)."""
+    if not raw_pages:
+        return False, "EMPTY_EXTRACTION"
+    total_chars = sum(len(p[0].strip()) for p in raw_pages)
+    if total_chars < 10:
+        return False, f"INSUFFICIENT_CHARACTERS_{total_chars}"
+    empty_pages = sum(1 for p in raw_pages if not p[0].strip())
+    empty_ratio = empty_pages / len(raw_pages)
+    if len(raw_pages) > 2 and empty_ratio > 0.8:
+        return False, f"HIGH_EMPTY_PAGE_RATIO_{empty_ratio:.2f}_POSSIBLE_SCANNED_PDF"
+    return True, "QUALITY_PASSED"
+
+
+def validate_chunk_quality_contract(chunks: list[Chunk]) -> dict[str, Any]:
+    """Kiểm tra hợp đồng chất lượng của tập chunk trước khi đưa vào Indexing (Chunk Quality Contract)."""
+    empty_chunks = [c for c in chunks if not c.text.strip()]
+    chunk_ids = [c.chunk_id for c in chunks]
+    duplicate_ids = len(chunk_ids) - len(set(chunk_ids))
+    content_hashes = [c.content_hash for c in chunks]
+    duplicate_content = len(content_hashes) - len(set(content_hashes))
+
+    report = {
+        "total_chunks": len(chunks),
+        "empty_chunks": len(empty_chunks),
+        "duplicate_chunk_ids": duplicate_ids,
+        "duplicate_content": duplicate_content,
+        "passed": len(empty_chunks) == 0 and duplicate_ids == 0,
+    }
+    if not report["passed"]:
+        raise ValueError(f"Chunk Quality Contract vi phạm tiêu chuẩn: {report}")
+    return report
+
 
 
 def read_text(path: Path) -> list[tuple[str, int | None]]:
@@ -232,7 +284,8 @@ def structure_aware_chunk(
         stripped = line.strip()
         if not stripped:
             continue
-        if HEADING_REGEX.match(stripped):
+        # Dùng re.search vì HEADING_REGEX đã được neo bằng ^\s* hoặc \n\s*
+        if HEADING_REGEX.search(stripped):
             if current_lines:
                 sections.append((current_section, current_lines))
                 current_lines = []

@@ -1,47 +1,52 @@
-"""Dịch vụ HTTP REST API cho Vietnamese Evidence-Grounded Knowledge Assistant (FastAPI Service).
+"""Dịch vụ HTTP REST API cho Evidence-Grounded Enterprise Knowledge Assistant (FastAPI Service).
 
-Cung cấp các endpoint:
-- /health: Kiểm tra tổng quát trạng thái hệ thống (đã làm sạch, không để lộ filesystem path).
-- /health/live: Liveness probe cho orchestrator / container.
-- /health/ready: Readiness probe kiểm tra tính toàn vẹn và đồng bộ của FAISS & BM25 Artifacts.
-- /query: Endpoint hỏi đáp tri thức nội bộ với bằng chứng phân tầng, trích dẫn [C1], [C2],
-  và cổng Evidence Quality Gate.
+Cung cấp các endpoint chuẩn doanh nghiệp:
+- GET /health: Liveness & Readiness tổng quan.
+- GET /health/live: Liveness probe cho container/orchestrator.
+- GET /health/ready: Readiness probe chuyên sâu kiểm tra toàn vẹn FAISS, BM25, và reranker_mode.
+- POST /v1/query (và alias /query): Endpoint production nghiêm ngặt, chỉ nhận question & security scope.
+  Khóa cứng cấu hình retrieval phía server, ngăn client bypass canonical policy.
+- POST /internal/debug/retrieve: Endpoint nghiên cứu nội bộ cho phép tùy biến tham số ablation & debug.
+- POST /v1/feedback: Thu thập phản hồi người dùng phục vụ Continuous Evaluation Loop.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from .generation import ABSTAIN_PHRASE, generate_grounded_response
+from .service import QueryRequest, RAGService
 from .utils import load_json, setup_logging
 
 if TYPE_CHECKING:
     from .retrieval import Retriever
 
-# Thiết lập logging cho API
 setup_logging()
 LOGGER = logging.getLogger("rag_knowledge_assistant.api")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_DIR = PROJECT_ROOT / "models/rag_index"
+FEEDBACK_DIR = PROJECT_ROOT / "feedback"
 
 app = FastAPI(
-    title="Vietnamese Evidence-Grounded Knowledge Assistant (Hybrid RAG)",
+    title="Evidence-Grounded Enterprise Knowledge Assistant",
     description=(
-        "REST API tra cứu tri thức nội bộ tiếng Việt chính xác cao, kết hợp Dense FAISS, "
-        "BM25Okapi, RRF, Cross-Encoder Reranking, Evidence Quality Gate và Claim-Level Citations."
+        "REST API tra cứu tri thức doanh nghiệp căn thực bằng chứng, "
+        "kết hợp Dense FAISS, BM25Okapi, RRF, Cross-Encoder Reranking, "
+        "Evidence Quality Gate và Claim-Level Citations."
     ),
-    version="2.0.0",
+    version="2.1.0",
 )
 
-# Thể hiện đơn lẻ (Singleton) của Retriever được nạp theo cơ chế Lazy Loading
 _retriever: Retriever | None = None
+_rag_service: RAGService | None = None
 
 
 def get_retriever() -> Retriever:
@@ -55,8 +60,26 @@ def get_retriever() -> Retriever:
     return _retriever
 
 
+def get_rag_service() -> RAGService:
+    """Khởi tạo hoặc trả về thể hiện Singleton của RAGService."""
+    global _rag_service
+    if _rag_service is None:
+        retriever_inst = get_retriever()
+        _rag_service = RAGService(retriever_inst)
+    return _rag_service
+
+
+# ==============================================================================
+# SCHEMAS
+# ==============================================================================
+
+
 class QueryIn(BaseModel):
-    """Payload đầu vào cho yêu cầu hỏi đáp /query."""
+    """Payload đầu vào cho yêu cầu hỏi đáp production /v1/query.
+
+    Client CHỈ được truyền câu hỏi và thẩm quyền danh tính (Access Scope).
+    Toàn bộ tham số pipeline (k, reranker, threshold, fusion) do Server áp đặt.
+    """
 
     question: str = Field(
         ...,
@@ -65,32 +88,14 @@ class QueryIn(BaseModel):
         description="Câu hỏi bằng tiếng Việt cần tra cứu tri thức",
         json_schema_extra={"example": "Nhân viên chính thức có bao nhiêu ngày phép năm?"},
     )
-    top_k: int = Field(
-        default=4,
-        ge=1,
-        le=10,
-        description="Số lượng đoạn văn bản trích dẫn tối đa đưa vào ngữ cảnh",
-    )
-    min_score: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Ngưỡng điểm tương đồng tối thiểu để nhận kết quả (tùy chọn)",
-    )
-    dense_weight: float | None = Field(
-        default=None,
-        ge=0.0,
-        le=1.0,
-        description="Trọng số ép nhánh tìm kiếm (None: Dual Search + RRF; 1.0: Dense-only; 0.0: BM25-only)",
-    )
-    use_reranker: bool = Field(
-        default=True,
-        description="Kích hoạt mô hình Cross-Encoder để xếp hạng lại",
+    user_groups: list[str] = Field(
+        default=["public", "employee"],
+        description="Danh sách nhóm thẩm quyền bảo mật của người dùng (Access Context)",
     )
 
 
 class CitationItem(BaseModel):
-    """Chi tiết trích dẫn minh chứng cấp độ khẳng định (Claim-Level Citation)."""
+    """Chi tiết trích dẫn minh chứng."""
 
     id: str = Field(..., description="Mã trích dẫn (ví dụ: C1, C2)")
     document: str = Field(..., description="Tên tệp tài liệu gốc")
@@ -116,14 +121,25 @@ class SourceItem(BaseModel):
     score: float = Field(..., description="Điểm số tương thích ngược")
     dense_score: float = Field(..., description="Điểm tương đồng Cosine ngữ nghĩa")
     bm25_score: float = Field(..., description="Điểm từ khóa BM25")
-    rerank_score: float = Field(..., description="Điểm sau Cross-Encoder Reranking")
+    evidence_score: float | None = Field(None, description="Điểm đánh giá bằng chứng")
+    rerank_score: float | None = Field(None, description="Điểm sau Cross-Encoder Reranking")
 
 
 class QueryOut(BaseModel):
-    """Payload đầu ra chuẩn hóa cho câu trả lời và trích dẫn."""
+    """Payload đầu ra chuẩn hóa cho câu trả lời và trích dẫn theo Architecture v2."""
 
+    request_id: str = Field(..., description="Mã truy vết duy nhất của request")
     answer: str = Field(
         ..., description="Câu trả lời tổng hợp căn thực hoặc thông báo từ chối"
+    )
+    decision: dict[str, Any] = Field(
+        ..., description="Quyết định hệ thống (action, answerable, reason)"
+    )
+    retrieval: dict[str, Any] = Field(
+        ..., description="Thống kê ứng viên và chế độ reranker"
+    )
+    grounding: dict[str, Any] = Field(
+        ..., description="Chỉ số căn thực bằng chứng (evidence_score, gate_passed, citation_valid)"
     )
     citations: list[CitationItem] = Field(
         default_factory=list,
@@ -133,11 +149,40 @@ class QueryOut(BaseModel):
         default_factory=list,
         description="Danh sách toàn bộ các nguồn tài liệu ứng viên được duyệt",
     )
-    model_version: str = Field(..., description="Phiên bản mô hình/index đang sử dụng")
-    index_version: str = Field(..., description="Mã phiên bản chỉ mục thời gian thực")
-    evidence_gate_passed: bool = Field(
-        ..., description="Cờ xác nhận bằng chứng có vượt qua Evidence Quality Gate không"
+    versions: dict[str, str] = Field(
+        ..., description="Phiên bản model, index và reranker_mode"
     )
+    # Các trường tương thích ngược (Backward compatibility)
+    model_version: str = Field(default="rag-evidence-v2")
+    index_version: str = Field(default="unknown")
+    evidence_gate_passed: bool = Field(default=True)
+
+
+class DebugRetrieveIn(BaseModel):
+    """Payload cho endpoint nghiên cứu nội bộ /internal/debug/retrieve."""
+
+    question: str
+    top_k: int = 4
+    candidate_k: int | None = None
+    min_score: float | None = None
+    dense_weight: float | None = None
+    use_reranker: bool = True
+    user_groups: list[str] | None = None
+
+
+class FeedbackIn(BaseModel):
+    """Payload thu thập phản hồi từ người dùng hoặc người thẩm định."""
+
+    request_id: str
+    helpful: bool
+    expected_document: str | None = None
+    expected_section: str | None = None
+    reviewer_note: str | None = None
+
+
+# ==============================================================================
+# ENDPOINTS
+# ==============================================================================
 
 
 @app.get(
@@ -146,7 +191,7 @@ class QueryOut(BaseModel):
     response_model=dict[str, Any],
 )
 def health() -> dict[str, Any]:
-    """Endpoint kiểm tra trạng thái hoạt động của hệ thống, không làm lộ đường dẫn máy chủ."""
+    """Kiểm tra tổng quan trạng thái, không làm lộ đường dẫn filesystem."""
     required_files = ("config.json", "index.faiss", "chunks.json")
     ready = all((INDEX_DIR / filename).exists() for filename in required_files)
 
@@ -191,7 +236,7 @@ def health_live() -> dict[str, Any]:
     response_model=dict[str, Any],
 )
 def health_ready() -> dict[str, Any]:
-    """Kiểm tra chuyên sâu: Sự tồn tại và tính đồng bộ giữa FAISS index và chunks.json."""
+    """Kiểm tra chuyên sâu: FAISS index, chunks.json, BM25, và reranker_mode."""
     required_files = ("config.json", "index.faiss", "chunks.json", "bm25_index.json")
     missing = [f for f in required_files if not (INDEX_DIR / f).exists()]
 
@@ -215,13 +260,16 @@ def health_ready() -> dict[str, Any]:
                 ),
             )
 
+        reranker_mode = retriever_inst.reranker.mode
+
         return {
             "status": "ready",
             "model_version": config_data.get("model_version", "rag-evidence-v2"),
             "index_version": config_data.get("index_version", "unknown"),
             "vector_dimension": config_data.get("vector_dimension"),
             "total_chunks": len(chunks_data),
-            "reranker_ready": retriever_inst.reranker.enabled,
+            "reranker_mode": reranker_mode,
+            "reranker_ready": reranker_mode != "disabled",
         }
     except HTTPException:
         raise
@@ -233,86 +281,105 @@ def health_ready() -> dict[str, Any]:
 
 
 @app.post(
-    "/query",
-    summary="Gửi câu hỏi tra cứu tri thức nội bộ",
+    "/v1/query",
+    summary="Gửi câu hỏi tra cứu tri thức nội bộ (Production Canonical Endpoint)",
     response_model=QueryOut,
 )
-def query(payload: QueryIn) -> QueryOut:
-    """Endpoint xử lý câu hỏi tra cứu tri thức.
+@app.post(
+    "/query",
+    summary="Alias tương thích ngược cho endpoint hỏi đáp",
+    response_model=QueryOut,
+    include_in_schema=False,
+)
+def query(payload: QueryIn, request: Request) -> QueryOut:
+    """Production Endpoint: Nhận câu hỏi, áp đặt toàn bộ chính sách retrieval từ server."""
+    request_id = getattr(request.state, "request_id", None) or f"req_{uuid.uuid4().hex[:12]}"
 
-    Thực hiện truy xuất văn bản Canonical Hybrid Search (Dense + BM25 + RRF + Reranker),
-    kiểm định Evidence Gate, và sinh câu trả lời căn thực kèm trích dẫn có cấu trúc.
-    """
     try:
-        retriever_inst = get_retriever()
-        hits = retriever_inst.search(
-            query=payload.question,
-            k=payload.top_k,
-            min_score=payload.min_score,
-            dense_weight=payload.dense_weight,
-            use_reranker=payload.use_reranker,
+        rag_svc = get_rag_service()
+        req_obj = QueryRequest(
+            question=payload.question,
+            user_groups=tuple(payload.user_groups),
+            request_id=request_id,
         )
-    except (OSError, ValueError, KeyError, FileNotFoundError) as exc:
-        LOGGER.error("Lỗi khi tải hoặc tìm kiếm trên chỉ mục: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail="Hệ thống chỉ mục chưa sẵn sàng hoặc artifact bị lỗi. Vui lòng chạy 'python -m src.train' trước.",
-        ) from exc
+        res = rag_svc.answer(req_obj)
 
-    model_ver = retriever_inst.config.get("model_version", "rag-evidence-v2")
-    index_ver = retriever_inst.config.get("index_version", "unknown")
-
-    # Xử lý trường hợp không tìm thấy bất kỳ chunk nào hoặc bị lọc toàn bộ
-    if not hits:
         return QueryOut(
-            answer=ABSTAIN_PHRASE,
-            citations=[],
-            sources=[],
-            model_version=model_ver,
-            index_version=index_ver,
-            evidence_gate_passed=False,
+            request_id=res.request_id,
+            answer=res.answer,
+            decision=res.decision,
+            retrieval=res.retrieval,
+            grounding=res.grounding,
+            citations=[CitationItem(**c) for c in res.citations],
+            sources=[
+                SourceItem(
+                    chunk_id=s.get("chunk_id", ""),
+                    document_id=s.get("document_id", ""),
+                    source=s.get("source", ""),
+                    source_path=s.get("source_path", s.get("source", "")),
+                    page=s.get("page"),
+                    section=s.get("section"),
+                    retrieval_score=float(s.get("retrieval_score", 0.0)),
+                    score=float(s.get("score", s.get("retrieval_score", 0.0))),
+                    dense_score=float(s.get("dense_score", 0.0)),
+                    bm25_score=float(s.get("bm25_score", 0.0)),
+                    evidence_score=float(s.get("evidence_score", 0.0)) if s.get("evidence_score") is not None else None,
+                    rerank_score=float(s.get("rerank_score", 0.0)) if s.get("rerank_score") is not None else None,
+                )
+                for s in res.sources
+            ],
+            versions=res.versions,
+            model_version=res.versions.get("model_version", "rag-evidence-v2"),
+            index_version=res.versions.get("index_version", "unknown"),
+            evidence_gate_passed=bool(res.grounding.get("evidence_gate_passed", True)),
         )
+    except Exception as exc:
+        LOGGER.exception("[req=%s] Lỗi không mong muốn khi xử lý query: %s", request_id, exc)
+        raise HTTPException(status_code=500, detail="Lỗi nội bộ dịch vụ RAG.") from exc
 
-    # Sinh câu trả lời căn thực và trích xuất danh sách trích dẫn
-    answer_text, citations_data, gate_passed = generate_grounded_response(
-        payload.question, hits, max_chunks=payload.top_k
+
+@app.post(
+    "/internal/debug/retrieve",
+    summary="Endpoint nghiên cứu & debug: Cho phép tùy biến toàn bộ cờ retrieval",
+    response_model=dict[str, Any],
+)
+def debug_retrieve(payload: DebugRetrieveIn) -> dict[str, Any]:
+    """Endpoint dùng cho thử nghiệm, ablation benchmark, và kiểm thử kỹ thuật."""
+    retriever_inst = get_retriever()
+    hits = retriever_inst.search(
+        query=payload.question,
+        k=payload.top_k,
+        candidate_k=payload.candidate_k,
+        min_score=payload.min_score,
+        dense_weight=payload.dense_weight,
+        use_reranker=payload.use_reranker,
+        user_groups=payload.user_groups,
     )
+    return {
+        "question": payload.question,
+        "count": len(hits),
+        "hits": hits,
+        "reranker_mode": retriever_inst.reranker.mode,
+    }
 
-    formatted_citations = [
-        CitationItem(
-            id=c.get("id", "C1"),
-            document=c.get("document", "unknown"),
-            source_path=c.get("source_path", c.get("document", "unknown")),
-            page=c.get("page"),
-            section=c.get("section"),
-            chunk_id=c.get("chunk_id", ""),
-            quote=c.get("quote", ""),
-        )
-        for c in citations_data
-    ]
 
-    formatted_sources = [
-        SourceItem(
-            chunk_id=hit.get("chunk_id", ""),
-            document_id=hit.get("document_id", ""),
-            source=hit.get("source", "unknown"),
-            source_path=hit.get("source_path", hit.get("source", "unknown")),
-            page=hit.get("page"),
-            section=hit.get("section"),
-            retrieval_score=round(float(hit.get("retrieval_score", 0.0)), 4),
-            score=round(float(hit.get("score", 0.0)), 4),
-            dense_score=round(float(hit.get("dense_score", 0.0)), 4),
-            bm25_score=round(float(hit.get("bm25_score", 0.0)), 4),
-            rerank_score=round(float(hit.get("rerank_score", 0.0)), 4),
-        )
-        for hit in hits
-    ]
+@app.post(
+    "/v1/feedback",
+    summary="Ghi nhận phản hồi người dùng phục vụ Continuous Improvement Loop",
+    response_model=dict[str, str],
+)
+def record_feedback(payload: FeedbackIn) -> dict[str, str]:
+    """Thu thập tín hiệu phản hồi vào feedback/feedback.jsonl."""
+    FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
+    feedback_file = FEEDBACK_DIR / "feedback.jsonl"
 
-    return QueryOut(
-        answer=answer_text,
-        citations=formatted_citations,
-        sources=formatted_sources,
-        model_version=model_ver,
-        index_version=index_ver,
-        evidence_gate_passed=gate_passed,
-    )
+    record = payload.model_dump()
+    record["received_at"] = datetime.now(timezone.utc).isoformat()
+
+    try:
+        with feedback_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return {"status": "recorded", "request_id": payload.request_id}
+    except Exception as exc:
+        LOGGER.error("Lỗi khi ghi feedback: %s", exc)
+        raise HTTPException(status_code=500, detail="Không thể lưu phản hồi.") from exc

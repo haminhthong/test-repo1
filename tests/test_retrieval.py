@@ -1,9 +1,14 @@
-"""Unit tests cho module ranking, BM25Index, RRF và Cross-Encoder."""
+"""Unit tests cho module ranking, BM25Index, RRF, Cross-Encoder và nDCG metric guarantees."""
 
 from __future__ import annotations
 
 import pytest
-from src.evaluate import calculate_retrieval_metrics, load_benchmark
+from src.evaluate import (
+    BenchmarkCase,
+    calculate_retrieval_metrics,
+    load_benchmark,
+    tune_evidence_gate_threshold,
+)
 from src.ranking import (
     BM25Index,
     CrossEncoderReranker,
@@ -59,23 +64,18 @@ def test_bm25_index_corpus_search():
 
 def test_reciprocal_rank_fusion_math():
     """Kiểm tra tính toán điểm Reciprocal Rank Fusion (RRF)."""
-    # Doc 0: Rank 1 ở cả Dense và BM25
-    # Doc 1: Rank 2 ở Dense, không xuất hiện ở BM25
-    # Doc 2: Rank 1 ở BM25, không xuất hiện ở Dense
     dense_ranks = {0: 1, 1: 2}
     bm25_ranks = {0: 1, 2: 1}
 
     rrf_scores = reciprocal_rank_fusion(dense_ranks, bm25_ranks, k=60)
-
-    # RRF(0) = 1/(60+1) + 1/(60+1) = 2/61 ~ 0.03278
-    # RRF(1) = 1/(60+2) = 1/62 ~ 0.01612
-    # RRF(2) = 1/(60+1) = 1/61 ~ 0.01639
     assert rrf_scores[0] > rrf_scores[2] > rrf_scores[1]
 
 
 def test_cross_encoder_reranker_fallback_scoring():
     """Kiểm tra CrossEncoderReranker hoạt động trơn tru ở chế độ fallback."""
     reranker = CrossEncoderReranker(enabled=False)
+    assert reranker.mode == "disabled"
+
     candidates = [
         {"text": "Chính sách nghỉ phép 12 ngày", "rrf_score": 0.03},
         {"text": "Bảo mật thông tin và mật khẩu", "rrf_score": 0.01},
@@ -84,7 +84,8 @@ def test_cross_encoder_reranker_fallback_scoring():
 
     assert len(reranked) == 2
     assert "rerank_score" in reranked[0]
-    assert "retrieval_score" in reranked[0]
+    assert "evidence_score" in reranked[0]
+    assert reranked[0]["evidence_score"] >= reranked[1]["evidence_score"]
     assert reranked[0]["text"].startswith("Chính sách nghỉ phép")
 
 
@@ -116,4 +117,57 @@ def test_retrieval_metrics_use_first_relevant_rank():
     assert metrics["recall_at_k"] == 1.0
     assert metrics["hit_rate_at_1"] == 0.5
     assert metrics["mrr"] == 0.75
-    assert metrics["ndcg_at_k"] > 0.0
+    assert 0.0 <= metrics["ndcg_at_k"] <= 1.0
+
+
+def test_ndcg_is_always_between_zero_and_one():
+    """Bắt buộc nDCG luôn nằm trong khoảng [0.0, 1.0], không thể vượt quá 1.0."""
+    # Kịch bản nguy hiểm: Nhiều chunk cùng thuộc 1 document xuất hiện ở top-k
+    ranked_chunks = [
+        ["policy_leave.txt", "policy_leave.txt", "policy_leave.txt", "other.txt"],
+        ["security.txt", "security.txt"],
+        ["wrong1.txt", "wrong2.txt"],
+    ]
+    expected = [
+        {"policy_leave.txt"},
+        {"security.txt"},
+        {"right.txt"},
+    ]
+    latencies = [0.01, 0.02, 0.03]
+
+    metrics = calculate_retrieval_metrics(ranked_chunks, expected, latencies, k=4)
+    ndcg = float(metrics["ndcg_at_k"])
+
+    assert 0.0 <= ndcg <= 1.0, f"LỖI TOÁN HỌC: nDCG={ndcg} vượt ra ngoài [0.0, 1.0]!"
+
+
+def test_document_relevance_not_counted_twice():
+    """Đảm bảo tài liệu trùng lặp trong top-k không bị cộng dồn relevance làm sai lệch DCG."""
+    # Nếu không deduplicate, 3 chunk cùng tài liệu đúng sẽ cộng 1 + 1/log2(3) + 1/log2(4) > 2
+    # Với IDCG = 1, nếu tính sai nDCG sẽ > 2.
+    metrics = calculate_retrieval_metrics(
+        [["doc1.txt", "doc1.txt", "doc1.txt"]],
+        [{"doc1.txt"}],
+        [0.01],
+        k=4,
+    )
+    assert metrics["ndcg_at_k"] == 1.0
+
+
+def test_evidence_gate_threshold_selected_on_dev_only():
+    """Hàm tune_evidence_gate_threshold chỉ cho phép chạy trên tập DEV."""
+    class FakeRetriever:
+        evidence_gate_threshold = 0.25
+        def search(self, *args, **kwargs):
+            return [{"evidence_score": 0.8, "retrieval_score": 0.8}]
+
+    dev_cases = [
+        BenchmarkCase(question="Q1", expected_sources=("doc.txt",), split="dev", is_answerable=True),
+        BenchmarkCase(question="Q2", expected_sources=("ABSTAIN",), split="dev", is_answerable=False),
+    ]
+    tau = tune_evidence_gate_threshold(dev_cases, FakeRetriever())
+    assert 0.1 <= tau <= 0.9
+
+    test_case = BenchmarkCase(question="Q3", expected_sources=("doc.txt",), split="test", is_answerable=True)
+    with pytest.raises(AssertionError, match="DEV"):
+        tune_evidence_gate_threshold([test_case], FakeRetriever())

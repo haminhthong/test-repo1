@@ -157,7 +157,7 @@ class BM25Index:
             self._build()
 
     def _build(self) -> None:
-        """Xây dựng mô hình BM25Okapi."""
+        """Xây dựng mô hình BM25Okapi và cache document frequency cho fallback nội bộ."""
         try:
             from rank_bm25 import BM25Okapi
 
@@ -165,6 +165,21 @@ class BM25Index:
         except ImportError:
             LOGGER.warning("rank_bm25 chưa được cài đặt, sử dụng fallback BM25 nội bộ.")
             self._bm25_model = None
+
+        # Cache document frequency & average doc length để tính IDF chính xác
+        # cho cả nhánh fallback nội bộ.
+        df: dict[str, int] = {}
+        total_len = 0
+        for tokens in self.tokenized_corpus:
+            total_len += len(tokens)
+            for term in set(tokens):
+                df[term] = df.get(term, 0) + 1
+        self._doc_freqs: dict[str, int] = df
+        self._avg_doc_len: float = (
+            total_len / len(self.tokenized_corpus)
+            if self.tokenized_corpus
+            else 0.0
+        )
 
     @classmethod
     def from_texts(cls, texts: list[str]) -> BM25Index:
@@ -189,9 +204,16 @@ class BM25Index:
         if self._bm25_model is not None:
             scores = self._bm25_model.get_scores(query_tokens)
         else:
-            # Fallback nếu không có rank_bm25
+            # Fallback nếu không có rank_bm25: dùng bm25_score_single với
+            # total_docs và doc_freqs lấy từ corpus đã cache.
             scores = [
-                bm25_score_single(query_tokens, doc_tokens, total_docs=len(self.tokenized_corpus))
+                bm25_score_single(
+                    query_tokens,
+                    doc_tokens,
+                    total_docs=len(self.tokenized_corpus),
+                    doc_freqs=self._doc_freqs,
+                    avg_doc_len=self._avg_doc_len,
+                )
                 for doc_tokens in self.tokenized_corpus
             ]
 
@@ -254,6 +276,38 @@ def reciprocal_rank_fusion(
     return rrf_scores
 
 
+from dataclasses import asdict, dataclass
+
+
+@dataclass
+class RetrievalCandidate:
+    """Cấu trúc dữ liệu đại diện cho một ứng viên truy xuất với hệ thống điểm phân tầng."""
+
+    chunk_id: str
+    document_id: str
+    source: str
+    page: int | None = None
+    section: str | None = None
+    text: str = ""
+    dense_score: float = 0.0
+    dense_rank: int | None = None
+    bm25_score: float = 0.0
+    bm25_rank: int | None = None
+    rrf_score: float = 0.0
+    reranker_score: float | None = None
+    evidence_score: float = 0.0
+    gate_passed: bool = False
+    source_path: str = ""
+    security_scope: tuple[str, ...] = ("public",)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Chuyển đổi thành từ điển JSON-serializable."""
+        data = asdict(self)
+        data["score"] = self.evidence_score
+        data["retrieval_score"] = self.evidence_score
+        return data
+
+
 class CrossEncoderReranker:
     """Mô hình xếp hạng lại sâu (Cross-Encoder Reranker) chấm điểm cặp (query, chunk).
 
@@ -271,6 +325,14 @@ class CrossEncoderReranker:
         self.enabled = enabled
         self._model: Any = None
         self._init_attempted = False
+
+    @property
+    def mode(self) -> str:
+        """Trạng thái hoạt động thực tế của reranker: 'neural', 'fallback', hoặc 'disabled'."""
+        if not self.enabled:
+            return "disabled"
+        model = self._get_model()
+        return "neural" if model is not None else "fallback"
 
     def _get_model(self) -> Any:
         """Tải mô hình CrossEncoder theo cơ chế Lazy Loading."""
@@ -307,7 +369,7 @@ class CrossEncoderReranker:
             top_k (int): Số lượng kết quả giữ lại (mặc định: 5).
 
         Returns:
-            List[Dict[str, Any]]: Danh sách top_k chunk đã được xếp hạng lại theo rerank_score giảm dần.
+            List[Dict[str, Any]]: Danh sách top_k chunk đã được xếp hạng lại theo evidence_score giảm dần.
         """
         if not candidates:
             return []
@@ -319,16 +381,20 @@ class CrossEncoderReranker:
                 pairs = [(query, str(cand.get("text", ""))) for cand in candidates]
                 raw_scores = model.predict(pairs)
 
-                # Chuẩn hóa điểm qua hàm Sigmoid: 1 / (1 + exp(-x)) đưa về khoảng [0.0, 1.0]
+                # Chuẩn hóa logit qua hàm Sigmoid: 1 / (1 + exp(-x)) thành điểm tương quan [0.0, 1.0].
+                # Lưu ý: Đây là transformed cross-attention relevance score, không phải xác suất đã calibrate.
                 normalized_scores = [
                     1.0 / (1.0 + math.exp(-float(s))) for s in raw_scores
                 ]
 
                 for cand, score in zip(candidates, normalized_scores, strict=True):
-                    cand["rerank_score"] = round(score, 4)
-                    cand["retrieval_score"] = round(score, 4)
+                    sc = round(score, 4)
+                    cand["reranker_score"] = sc
+                    cand["evidence_score"] = sc
+                    cand["rerank_score"] = sc
+                    cand["retrieval_score"] = sc
 
-                candidates.sort(key=lambda item: item["rerank_score"], reverse=True)
+                candidates.sort(key=lambda item: item["evidence_score"], reverse=True)
                 return candidates[:top_k]
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Lỗi trong quá trình suy luận Cross-Encoder: %s", exc)
@@ -338,8 +404,12 @@ class CrossEncoderReranker:
             rrf_sc = float(cand.get("rrf_score", 0.0))
             overlap_sc = lexical_overlap(query, str(cand.get("text", "")))
             fallback_score = min(max(rrf_sc * 25.0 * 0.7 + overlap_sc * 0.3, 0.0), 1.0)
-            cand["rerank_score"] = round(fallback_score, 4)
-            cand["retrieval_score"] = round(fallback_score, 4)
+            sc = round(fallback_score, 4)
+            cand["reranker_score"] = None  # Không gán neural score giả
+            cand["evidence_score"] = sc
+            cand["rerank_score"] = sc
+            cand["retrieval_score"] = sc
 
-        candidates.sort(key=lambda item: item["rerank_score"], reverse=True)
+        candidates.sort(key=lambda item: item["evidence_score"], reverse=True)
         return candidates[:top_k]
+

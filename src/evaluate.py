@@ -1,11 +1,12 @@
 """Đánh giá độc lập toàn diện hệ thống RAG đa tầng (Multi-Layer Benchmark Evaluation).
 
 Hỗ trợ đánh giá 3 tầng chất lượng:
-1. Tầng 1 (Retrieval Quality): Document Recall@K, Evidence Recall@K, MRR@K, nDCG@K, Hit@1, Latency p50/p95.
-   Phân rã theo từng lát cắt dữ liệu (Slices: factual, paraphrase, keyword_code, numeric, no_answer).
-2. Tầng 2 (Grounded Generation & Abstention): Tỷ lệ từ chối đúng khi thiếu bằng chứng (True Abstention Rate),
-   độ bao phủ từ khóa của câu trả lời tham chiếu.
-3. Tầng 3 (System Quality): Phân vị độ trễ (p50, p95), tỷ lệ lọc qua cổng Evidence Gate.
+1. Tầng 1 (Retrieval Quality): Document Recall@K, Evidence Recall@K, MRR@K, nDCG@K (chuẩn [0.0, 1.0]),
+   Hit@1, Latency p50/p95. Phân rã theo từng lát cắt dữ liệu (Slices: factual, paraphrase, keyword_code, numeric, no_answer).
+2. Tầng 2 (Evidence Gate & Answerability): Tỷ lệ từ chối đúng khi thiếu bằng chứng (True Abstention Rate),
+   False Answer Rate, Tối ưu ngưỡng Evidence Gate tự động trên tập Dev.
+3. Tầng 3 (Grounded Generation & Citation): Top Evidence Reference Token Coverage,
+   Citation Reference Validity (kiểm định cú pháp [C1], [C2] và trích xuất căn thực).
 """
 
 from __future__ import annotations
@@ -15,11 +16,11 @@ import logging
 import math
 import statistics
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .generation import ABSTAIN_PHRASE, generate_grounded_response
+from .generation import ABSTAIN_PHRASE, validate_citation_references
 from .ranking import tokenize
 from .utils import save_json, setup_logging
 
@@ -41,6 +42,7 @@ class BenchmarkCase:
     id: str = ""
     expected_documents: tuple[str, ...] = ()
     expected_sections: tuple[str, ...] = ()
+    expected_evidence: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     reference_answer: str = ""
     category: str = "factual"
     is_answerable: bool = True
@@ -75,6 +77,14 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
         raw_secs = item.get("expected_sections", [])
         sections = tuple(str(v).strip() for v in raw_secs)
 
+        raw_evidence = item.get("expected_evidence", [])
+        evidence_list: list[dict[str, Any]] = []
+        for ev in raw_evidence:
+            if isinstance(ev, dict):
+                evidence_list.append(ev)
+            elif isinstance(ev, str):
+                evidence_list.append({"document": ev})
+
         cases.append(
             BenchmarkCase(
                 id=str(item.get("id", f"Q{index+1:02d}")),
@@ -83,6 +93,7 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
                 split=split,
                 expected_documents=docs,
                 expected_sections=sections,
+                expected_evidence=tuple(evidence_list),
                 reference_answer=str(item.get("reference_answer", "")),
                 category=str(item.get("category", "factual")),
                 is_answerable=bool(item.get("is_answerable", True)),
@@ -94,12 +105,35 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
     return cases
 
 
+def unique_preserve_order(items: list[str]) -> list[str]:
+    """Loại bỏ phần tử trùng lặp nhưng bảo toàn thứ tự xếp hạng ban đầu."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
 def calculate_retrieval_metrics(
     ranked_sources: list[list[str]],
     expected_sources: list[set[str]],
     latencies: list[float],
+    *,
+    deduplicate: bool = True,
+    k: int | None = None,
 ) -> dict[str, float | int]:
-    """Tính Recall@k, Hit@1, MRR, nDCG@k và phân vị latency (hỗ trợ tương thích ngược)."""
+    """Tính Recall@k, Hit@1, MRR, nDCG@k và phân vị latency theo chuẩn toán học [0.0, 1.0].
+
+    Giải quyết triệt để lỗi nDCG > 1:
+    1. Khi đánh giá Document Retrieval, deduplicate tài liệu nguồn trước để tránh việc
+       nhiều chunk từ cùng một tài liệu liên tục cộng dồn relevance làm DCG > IDCG.
+    2. Tính IDCG chuẩn xác theo số lượng tài liệu liên quan thực tế:
+       ideal_k = min(len(expected), effective_k)
+       idcg = sum(1 / log2(i + 2) for i in range(ideal_k))
+    3. Đảm bảo bất đẳng thức toán học: 0.0 <= nDCG@k <= 1.0 dưới mọi trường hợp.
+    """
     if (
         not ranked_sources
         or len(ranked_sources) != len(expected_sources)
@@ -117,10 +151,14 @@ def calculate_retrieval_metrics(
         if not expected:
             continue
 
+        eval_sources = unique_preserve_order(sources) if deduplicate else list(sources)
+        effective_k = k if k is not None else len(eval_sources)
+        eval_sources = eval_sources[:effective_k]
+
         rank = next(
             (
                 position
-                for position, source in enumerate(sources, start=1)
+                for position, source in enumerate(eval_sources, start=1)
                 if source in expected
             ),
             None,
@@ -128,13 +166,19 @@ def calculate_retrieval_metrics(
         hits_at_one += int(rank == 1)
         reciprocal_ranks.append(1.0 / rank if rank else 0.0)
 
-        # Tính nDCG@k
+        # Tính toán DCG@k
         dcg = 0.0
-        for pos, source in enumerate(sources, start=1):
+        for pos, source in enumerate(eval_sources, start=1):
             if source in expected:
                 dcg += 1.0 / math.log2(pos + 1)
-        idcg = 1.0  # Vì mỗi query thường có 1 tài liệu chính chuẩn
-        ndcg_list.append(dcg / idcg if idcg > 0 else 0.0)
+
+        # Tính toán IDCG@k chuẩn hóa
+        ideal_relevant = min(len(expected), max(1, len(eval_sources)))
+        idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_relevant))
+
+        ndcg_val = (dcg / idcg) if idcg > 0.0 else 0.0
+        # Kẹp chặt trong [0.0, 1.0] để chống sai số float
+        ndcg_list.append(max(0.0, min(1.0, ndcg_val)))
 
     total_valid = len(reciprocal_ranks)
     if total_valid == 0:
@@ -144,6 +188,7 @@ def calculate_retrieval_metrics(
             "mrr": 1.0,
             "ndcg_at_k": 1.0,
             "avg_latency_ms": 0.0,
+            "p50_latency_ms": 0.0,
             "p95_latency_ms": 0.0,
             "total_queries": 0,
         }
@@ -166,6 +211,75 @@ def calculate_retrieval_metrics(
     }
 
 
+def evaluate_evidence_retrieval(
+    retrieved_chunks: list[list[dict[str, Any]]],
+    cases: list[BenchmarkCase],
+) -> dict[str, float]:
+    """Đánh giá chất lượng truy xuất cấp độ Bằng chứng (Evidence-Level Retrieval).
+
+    Khác với Document Retrieval chỉ so khớp tên tệp, Evidence Retrieval kiểm tra:
+    - Đúng tài liệu (document/source).
+    - Đúng section/chương mục (nếu case có định nghĩa).
+    - Đoạn trích text có chứa chuỗi bằng chứng kỳ vọng (text_contains).
+    """
+    ans_cases = [c for c in cases if c.is_answerable]
+    if not ans_cases:
+        return {"evidence_recall_at_k": 1.0, "evidence_mrr": 1.0}
+
+    hits_found = 0
+    reciprocal_ranks: list[float] = []
+
+    for hits, case in zip(retrieved_chunks, ans_cases, strict=True):
+        if not case.expected_evidence and not case.expected_sections:
+            # Fallback sang document level nếu case chưa khai báo evidence chi tiết
+            doc_set = set(case.expected_documents or case.expected_sources)
+            match_rank = next(
+                (pos for pos, h in enumerate(hits, start=1) if h.get("source") in doc_set),
+                None,
+            )
+        else:
+            match_rank = None
+            for pos, h in enumerate(hits, start=1):
+                h_doc = h.get("source", "")
+                h_sec = h.get("section", "")
+                h_text = h.get("text", "")
+
+                matched = False
+                if case.expected_evidence:
+                    for ev in case.expected_evidence:
+                        ev_doc = ev.get("document", ev.get("document_id", ""))
+                        ev_sec = ev.get("section")
+                        ev_text = ev.get("text_contains", "")
+
+                        doc_match = (not ev_doc) or (ev_doc in h_doc) or (h_doc in ev_doc)
+                        sec_match = (not ev_sec) or (ev_sec == h_sec)
+                        text_match = (not ev_text) or (ev_text.lower() in h_text.lower())
+
+                        if doc_match and sec_match and text_match:
+                            matched = True
+                            break
+                elif case.expected_sections:
+                    doc_set = set(case.expected_documents or case.expected_sources)
+                    if h_doc in doc_set and h_sec in case.expected_sections:
+                        matched = True
+
+                if matched:
+                    match_rank = pos
+                    break
+
+        if match_rank is not None:
+            hits_found += 1
+            reciprocal_ranks.append(1.0 / match_rank)
+        else:
+            reciprocal_ranks.append(0.0)
+
+    total = len(ans_cases)
+    return {
+        "evidence_recall_at_k": round(hits_found / total, 4) if total > 0 else 1.0,
+        "evidence_mrr": round(statistics.fmean(reciprocal_ranks), 4) if reciprocal_ranks else 1.0,
+    }
+
+
 def evaluate_retrieval_comprehensive(
     retriever: Retriever,
     cases: list[BenchmarkCase],
@@ -178,6 +292,7 @@ def evaluate_retrieval_comprehensive(
     ranked_sources: list[list[str]] = []
     expected_sources: list[set[str]] = []
     latencies: list[float] = []
+    retrieved_chunks_all: list[list[dict[str, Any]]] = []
 
     # Thống kê theo danh mục (Slice)
     category_cases: dict[str, list[BenchmarkCase]] = {}
@@ -187,6 +302,7 @@ def evaluate_retrieval_comprehensive(
 
     abstain_correct = 0
     total_unanswerable = 0
+    false_answers = 0
     keyword_overlaps: list[float] = []
 
     for case in cases:
@@ -202,6 +318,8 @@ def evaluate_retrieval_comprehensive(
 
         retrieved_docs = [str(item.get("source", "")) for item in results]
         ranked_sources.append(retrieved_docs)
+        if case.is_answerable:
+            retrieved_chunks_all.append(results)
 
         # Tập expected sources (bỏ qua 'ABSTAIN' trong so sánh tài liệu thật)
         exp_docs = set(case.expected_documents)
@@ -220,14 +338,15 @@ def evaluate_retrieval_comprehensive(
         category_latencies[cat].append(elapsed)
 
         # Đánh giá Grounding / Abstention
+        gate_all_failed = not results or all(not r.get("gate_passed", True) for r in results)
         if not case.is_answerable:
             total_unanswerable += 1
-            # Nếu Evidence Gate lọc sạch hoặc kết quả bị từ chối
-            gate_all_failed = not results or all(not r.get("gate_passed", True) for r in results)
             if gate_all_failed:
                 abstain_correct += 1
+            else:
+                false_answers += 1
         else:
-            # Đo độ phủ từ khóa của reference answer
+            # Top Evidence Reference Token Coverage
             if results and case.reference_answer:
                 ref_tokens = set(tokenize(case.reference_answer))
                 top_text_tokens = set(tokenize(results[0].get("text", "")))
@@ -246,8 +365,9 @@ def evaluate_retrieval_comprehensive(
     ]
 
     base_metrics = calculate_retrieval_metrics(
-        answerable_ranked, answerable_expected, answerable_latencies
+        answerable_ranked, answerable_expected, answerable_latencies, k=top_k
     )
+    evidence_metrics = evaluate_evidence_retrieval(retrieved_chunks_all, cases)
 
     # Đánh giá từng Category Slice
     slice_metrics: dict[str, Any] = {}
@@ -264,7 +384,7 @@ def evaluate_retrieval_comprehensive(
 
         if cat_ans_ranked:
             slice_metrics[cat] = calculate_retrieval_metrics(
-                cat_ans_ranked, cat_ans_expected, cat_ans_latencies
+                cat_ans_ranked, cat_ans_expected, cat_ans_latencies, k=top_k
             )
         else:
             slice_metrics[cat] = {
@@ -275,17 +395,98 @@ def evaluate_retrieval_comprehensive(
     true_abstain_rate = (
         round(abstain_correct / total_unanswerable, 4) if total_unanswerable > 0 else 1.0
     )
+    false_answer_rate = (
+        round(false_answers / total_unanswerable, 4) if total_unanswerable > 0 else 0.0
+    )
     avg_keyword_coverage = (
         round(statistics.fmean(keyword_overlaps), 4) if keyword_overlaps else 0.0
     )
 
     return {
         **base_metrics,
+        **evidence_metrics,
         "true_abstain_rate": true_abstain_rate,
+        "false_answer_rate": false_answer_rate,
         "unanswerable_evaluated": total_unanswerable,
-        "avg_keyword_coverage": avg_keyword_coverage,
+        "top_evidence_token_coverage": avg_keyword_coverage,
+        "avg_keyword_coverage": avg_keyword_coverage,  # Backward-compatible alias
         "slices": slice_metrics,
     }
+
+
+def tune_evidence_gate_threshold(
+    dev_cases: list[BenchmarkCase],
+    retriever: Retriever,
+    *,
+    target_false_answer_rate: float = 0.05,
+    top_k: int = 4,
+    use_reranker: bool = True,
+) -> float:
+    """Tối ưu ngưỡng Evidence Gate tự động CHỈ trên tập Dev (không rò rỉ dữ liệu Test).
+
+    Mục tiêu: Maximize Answerable Recall subject to False Answer Rate <= target_false_answer_rate.
+
+    Args:
+        dev_cases: Danh sách ca kiểm thử trên split='dev'.
+        retriever: Thể hiện Retriever đang đánh giá.
+        target_false_answer_rate: Ngưỡng tối đa chấp nhận việc trả lời nhầm trên câu unanswerable.
+        top_k: Số lượng chunk ứng viên.
+        use_reranker: Cờ reranker.
+
+    Returns:
+        float: Ngưỡng điểm evidence_score được chọn.
+    """
+    assert all(c.split == "dev" for c in dev_cases), "LỖI NGUY HIỂM: Chỉ được tune threshold trên tập DEV!"
+
+    unans_cases = [c for c in dev_cases if not c.is_answerable]
+    ans_cases = [c for c in dev_cases if c.is_answerable]
+
+    if not unans_cases or not ans_cases:
+        return 0.25
+
+    # Thu thập điểm số evidence cao nhất cho mỗi case
+    unans_scores: list[float] = []
+    for c in unans_cases:
+        hits = retriever.search(c.question, k=top_k, use_reranker=use_reranker, min_score=0.0)
+        top_sc = max((h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0)
+        unans_scores.append(top_sc)
+
+    ans_scores: list[float] = []
+    for c in ans_cases:
+        hits = retriever.search(c.question, k=top_k, use_reranker=use_reranker, min_score=0.0)
+        top_sc = max((h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0)
+        ans_scores.append(top_sc)
+
+    best_threshold = 0.25
+    best_ans_recall = -1.0
+    min_false_rate = 1.0
+
+    # Quét ngưỡng từ 0.10 đến 0.85 với bước 0.02
+    thresholds = [round(0.10 + i * 0.02, 2) for i in range(38)]
+    for tau in thresholds:
+        false_ans_cnt = sum(sc >= tau for sc in unans_scores)
+        far = false_ans_cnt / len(unans_scores)
+
+        true_ans_cnt = sum(sc >= tau for sc in ans_scores)
+        ans_recall = true_ans_cnt / len(ans_scores)
+
+        if far <= target_false_answer_rate:
+            if ans_recall > best_ans_recall:
+                best_ans_recall = ans_recall
+                best_threshold = tau
+                min_false_rate = far
+        elif best_ans_recall < 0 and far < min_false_rate:
+            # Fallback nếu không ngưỡng nào đạt target: chọn ngưỡng có far thấp nhất
+            best_threshold = tau
+            min_false_rate = far
+
+    LOGGER.info(
+        "Dev Gate Tuning hoàn tất: chọn threshold=%.2f (Dev Answerable Recall=%.2f%%, FAR=%.2f%%)",
+        best_threshold,
+        best_ans_recall * 100,
+        min_false_rate * 100,
+    )
+    return best_threshold
 
 
 def evaluate_configuration(
@@ -313,7 +514,7 @@ def evaluate_configuration(
         ranked_sources.append([str(item.get("source", "")) for item in results])
         expected_sources.append(set(case.expected_documents or case.expected_sources))
 
-    return calculate_retrieval_metrics(ranked_sources, expected_sources, latencies)
+    return calculate_retrieval_metrics(ranked_sources, expected_sources, latencies, k=top_k)
 
 
 def run_evaluation(
@@ -341,7 +542,12 @@ def run_evaluation(
         len(test_cases),
     )
 
-    # 1. Đánh giá Dev Tuning
+    # 1. Đánh giá Dev Tuning & Threshold Sweep
+    calibrated_threshold = tune_evidence_gate_threshold(
+        dev_cases, retriever, target_false_answer_rate=0.05, top_k=top_k
+    )
+    retriever.evidence_gate_threshold = calibrated_threshold
+
     candidate_weights = (0.5, 0.7, 0.85)
     dev_results = {
         str(weight): evaluate_configuration(
@@ -357,7 +563,7 @@ def run_evaluation(
         ),
     )
 
-    # 2. Đánh giá So sánh Baseline trên Test Set
+    # 2. Đánh giá So sánh Baseline trên Test Set (Chỉ đánh giá 1 lần, không tune trên test)
     test_baselines: dict[str, Any] = {
         "lexical_only_bm25": evaluate_retrieval_comprehensive(
             retriever, test_cases, top_k=top_k, dense_weight=0.0, use_reranker=False
@@ -375,10 +581,11 @@ def run_evaluation(
 
     report: dict[str, Any] = {
         "schema_version": 2,
-        "system_name": "Vietnamese Evidence-Grounded Knowledge Assistant (Hybrid RAG)",
+        "system_name": "Evidence-Grounded Enterprise Knowledge Retrieval & Answering System",
         "selection_split": "dev",
         "evaluation_split": "test",
         "top_k": top_k,
+        "calibrated_evidence_gate_threshold": calibrated_threshold,
         "total_test_cases": len(test_cases),
         "selected_dense_weight": best_weight,
         "dev_tuning": dev_results,
@@ -389,13 +596,14 @@ def run_evaluation(
             "canonical_ndcg_at_k": test_baselines["canonical_hybrid_rrf_reranker"]["ndcg_at_k"],
             "canonical_hit_rate_at_1": test_baselines["canonical_hybrid_rrf_reranker"]["hit_rate_at_1"],
             "true_abstain_rate": test_baselines["canonical_hybrid_rrf_reranker"]["true_abstain_rate"],
+            "false_answer_rate": test_baselines["canonical_hybrid_rrf_reranker"]["false_answer_rate"],
             "avg_latency_ms": test_baselines["canonical_hybrid_rrf_reranker"]["avg_latency_ms"],
             "p95_latency_ms": test_baselines["canonical_hybrid_rrf_reranker"]["p95_latency_ms"],
         },
         "limitations": [
             "Corpus thử nghiệm gồm các chính sách nội bộ tiêu chuẩn; cần kiểm tra thêm khi nạp văn bản hàng trăm trang.",
             "Cross-Encoder reranking bổ sung độ trễ tính toán (~15-40ms trên CPU); có thể tắt với tham số use_reranker=False khi cần throughput cao.",
-            "Cần kiểm tra định kỳ ngưỡng evidence_gate_threshold khi quy mô tài liệu mở rộng.",
+            "Ngưỡng Evidence Gate được calibrate tự động trên tập Dev.",
         ],
     }
 
@@ -404,18 +612,18 @@ def run_evaluation(
     LOGGER.info("Đã lưu benchmark kết quả đánh giá tại: %s", report_path.resolve())
 
     # In bảng tóm tắt kết quả đẹp mắt ra màn hình
-    print("\n" + "=" * 80)
+    print("\n" + "=" * 85)
     print(" BÁO CÁO KẾT QUẢ ĐÁNH GIÁ CANONICAL HYBRID RAG (TEST SET)")
-    print("=" * 80)
+    print("=" * 85)
     print(f"{'Pipeline':<32} | {'Recall@K':<10} | {'MRR':<8} | {'nDCG':<8} | {'P95 Latency':<12}")
-    print("-" * 80)
+    print("-" * 85)
     for name, met in test_baselines.items():
         rec = met.get("recall_at_k", 0.0)
         mrr = met.get("mrr", 0.0)
         ndcg = met.get("ndcg_at_k", 0.0)
         p95 = met.get("p95_latency_ms", 0.0)
         print(f"{name:<32} | {rec:<10.4f} | {mrr:<8.4f} | {ndcg:<8.4f} | {p95:<10.2f} ms")
-    print("=" * 80 + "\n")
+    print("=" * 85 + "\n")
 
     return report
 

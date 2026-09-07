@@ -2,551 +2,1112 @@
   {
     "id": "Q01",
     "question": "Nhân viên chính thức có bao nhiêu ngày phép năm?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Nhân viên toàn thời gian chính thức có 12 ngày phép năm hưởng nguyên lương.",
     "category": "factual",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Nhân viên toàn thời gian chính"
+      }
+    ]
   },
   {
     "id": "Q02",
     "question": "Nghỉ từ ba ngày cần đăng ký trước bao lâu?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Đơn xin nghỉ phép từ 3 ngày liên tiếp trở lên cần gửi đăng ký trước tối thiểu 5 ngày làm việc.",
     "category": "factual",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Đơn xin nghỉ phép từ 3 ngày li"
+      }
+    ]
   },
   {
     "id": "Q03",
     "question": "Tài khoản công ty có bắt buộc bật xác thực hai yếu tố không?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Bắt buộc bật xác thực hai yếu tố (2FA) cho toàn bộ tài khoản công ty.",
     "category": "factual",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Bắt buộc bật xác thực hai yếu "
+      }
+    ]
   },
   {
     "id": "Q04",
     "question": "Khoản chi trên năm triệu đồng cần điều kiện gì?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Cần phải có phê duyệt trước (Pre-approval) bằng văn bản hoặc email từ Quản lý trực tiếp.",
     "category": "factual",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Cần phải có phê duyệt trước (P"
+      }
+    ]
   },
   {
     "id": "Q05",
     "question": "Quy định bật 2FA áp dụng cho những tài khoản nào?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Áp dụng cho toàn bộ tài khoản công ty.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Áp dụng cho toàn bộ tài khoản công ty"
+      }
+    ]
   },
   {
     "id": "Q06",
     "question": "Hóa đơn đỏ VAT có bắt buộc khi thanh toán công tác phí không?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Có, mọi chi phí công tác chỉ được hoàn ứng khi có hóa đơn tài chính hợp lệ (hóa đơn đỏ/VAT).",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Có, mọi chi phí công tác chỉ đ"
+      }
+    ]
   },
   {
     "id": "Q07",
     "question": "Nếu bị sốt đột xuất thì báo nghỉ và nộp đơn bù thế nào?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Báo trực tiếp cho quản lý và bổ sung đơn nghỉ trên hệ thống trong vòng 24 giờ sau khi quay lại làm việc.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Báo trực tiếp cho quản lý và b"
+      }
+    ]
   },
   {
     "id": "Q08",
     "question": "Mức tiền thưởng Tết năm 2027 của nhân viên xuất sắc là bao nhiêu?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": []
   },
   {
     "id": "Q09",
     "question": "Chi phí tiếp khách ăn tối có được thanh toán thẻ cá nhân không?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": []
   },
   {
     "id": "Q10",
     "question": "Người làm việc tại công ty 6 năm thì được bao nhiêu ngày nghỉ phép?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Được 13 ngày (12 ngày cơ bản + 1 ngày thâm niên từ năm thứ 5 trở lên).",
     "category": "numeric",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Được 13 ngày (12 ngày cơ bản +"
+      }
+    ]
   },
   {
     "id": "Q11",
     "question": "Kênh Slack nào tiếp nhận thông báo sự cố bảo mật?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Kênh Slack #incident-report.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Kênh Slack #incident-report"
+      }
+    ]
   },
   {
     "id": "Q12",
     "question": "Thời hạn hoàn ứng sau khi kết thúc công tác là bao nhiêu ngày?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Trong vòng 10 ngày làm việc kể từ ngày kết thúc chuyến công tác.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "dev"
+    "split": "dev",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "2. Thời hạn nộp hồ sơ:",
+        "text_contains": "Trong vòng 10 ngày làm việc kể"
+      }
+    ]
   },
   {
     "id": "Q13",
     "question": "Người có thâm niên từ năm năm được thêm ngày phép thế nào?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Được cộng thêm 1 ngày phép cho mỗi năm tiếp theo.",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Được cộng thêm 1 ngày phép cho"
+      }
+    ]
   },
   {
     "id": "Q14",
     "question": "Trường hợp nghỉ khẩn cấp phải bổ sung đơn trong thời hạn nào?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Trong vòng 24 giờ sau khi quay lại làm việc.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Trong vòng 24 giờ sau khi quay"
+      }
+    ]
   },
   {
     "id": "Q15",
     "question": "Sự cố an ninh mạng cần báo cho bộ phận nào?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Báo cho đội Bảo mật (Security Team).",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Báo cho đội Bảo mật (Security Team)"
+      }
+    ]
   },
   {
     "id": "Q16",
     "question": "Có được chia sẻ mật khẩu nội bộ cho người khác không?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Tuyệt đối không chia sẻ mật khẩu cá nhân hoặc tài khoản nội bộ cho bất kỳ ai.",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Tuyệt đối không chia sẻ mật kh"
+      }
+    ]
   },
   {
     "id": "Q17",
     "question": "Hồ sơ hoàn ứng phải nộp cho phòng nào?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Phải nộp cho phòng Kế toán.",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "2. Thời hạn nộp hồ sơ:",
+        "text_contains": "Phải nộp cho phòng Kế toán"
+      }
+    ]
   },
   {
     "id": "Q18",
     "question": "Thời hạn nộp hồ sơ thanh toán sau chuyến công tác là bao lâu?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Trong vòng 10 ngày làm việc kể từ ngày kết thúc chuyến công tác.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "2. Thời hạn nộp hồ sơ:",
+        "text_contains": "Trong vòng 10 ngày làm việc kể"
+      }
+    ]
   },
   {
     "id": "Q19",
     "question": "Email tiếp nhận thông tin khi bị lộ tài khoản là gì?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "security@company.com.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "security@company"
+      }
+    ]
   },
   {
     "id": "Q20",
     "question": "Khoản chi từ 5.000.000 VND trở lên yêu cầu hình thức phê duyệt nào?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Phê duyệt trước (Pre-approval) bằng văn bản hoặc email từ Quản lý trực tiếp.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Phê duyệt trước (Pre-approval)"
+      }
+    ]
   },
   {
     "id": "Q21",
     "question": "Thời gian tối đa để báo cáo khi phát hiện bị tấn công mạng là bao nhiêu phút?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Trong vòng 30 phút kể từ khi phát hiện.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Trong vòng 30 phút kể từ khi phát hiện"
+      }
+    ]
   },
   {
     "id": "Q22",
     "question": "Làm thế nào để xin nghỉ liên tiếp 4 ngày?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Cần gửi đăng ký trước tối thiểu 5 ngày làm việc vì đơn xin nghỉ từ 3 ngày liên tiếp trở lên.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Cần gửi đăng ký trước tối thiể"
+      }
+    ]
   },
   {
     "id": "Q23",
     "question": "Đồng nghiệp xin mượn pass máy tính để in tài liệu thì xử lý ra sao?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Tuyệt đối không chia sẻ mật khẩu cá nhân hoặc tài khoản nội bộ cho bất kỳ ai.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Tuyệt đối không chia sẻ mật kh"
+      }
+    ]
   },
   {
     "id": "Q24",
     "question": "Đi gặp khách hàng về có hóa đơn bán lẻ viết tay thì có được hoàn tiền không?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Không, chỉ được hoàn ứng khi có hóa đơn tài chính hợp lệ (hóa đơn đỏ/VAT).",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Không, chỉ được hoàn ứng khi c"
+      }
+    ]
   },
   {
     "id": "Q25",
     "question": "Quy chế công tác nước ngoài được cấp bao nhiêu USD một ngày?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q26",
     "question": "Chế độ thai sản cho nhân viên nữ nghỉ bao nhiêu tháng?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q27",
     "question": "Quy định về thời gian làm việc từ xa (Work from home) tối đa một tuần là mấy buổi?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q28",
     "question": "Ngân sách mua bản quyền phần mềm thiết kế Figma cho nhân viên IT là bao nhiêu?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q29",
     "question": "Nhân viên làm việc được 8 năm có tổng cộng bao nhiêu ngày phép một năm?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Có 15 ngày phép (12 ngày cơ bản + 3 ngày cộng thêm cho các năm thứ 6, 7, 8).",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Có 15 ngày phép (12 ngày cơ bả"
+      }
+    ]
   },
   {
     "id": "Q30",
     "question": "Khi nghi ngờ máy tính công ty bị dính mã độc ransomware thì làm gì đầu tiên?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Báo lập tức cho đội Bảo mật trong vòng 30 phút qua email security@company.com hoặc kênh Slack #incident-report.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Báo lập tức cho đội Bảo mật tr"
+      }
+    ]
   },
   {
     "id": "Q31",
     "question": "Một khoản chi 6.500.000 đồng khi đi công tác cần chuẩn bị những giấy tờ gì?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Cần hóa đơn tài chính hợp lệ (hóa đơn đỏ/VAT) và phê duyệt trước (Pre-approval) bằng văn bản hoặc email từ Quản lý trực tiếp.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Cần hóa đơn tài chính hợp lệ ("
+      }
+    ]
   },
   {
     "id": "Q32",
     "question": "Nghỉ ốm đột xuất không kịp xin phép trước thì có bị phạt không?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Trường hợp khẩn cấp có thể báo trực tiếp cho quản lý và bổ sung đơn nghỉ trên hệ thống trong vòng 24 giờ sau khi quay lại làm việc.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Trường hợp khẩn cấp có thể báo"
+      }
+    ]
   },
   {
     "id": "Q33",
     "question": "Điều kiện để một khoản tiền công tác được hoàn ứng đầy đủ là gì?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:", "2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:",
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Có hóa đơn tài chính hợp lệ (hóa đơn đỏ/VAT), có phê duyệt trước nếu trên 5.000.000 VND và nộp hồ sơ trong 10 ngày làm việc cho phòng Kế toán.",
     "category": "ambiguous",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Có hóa đơn tài chính hợp lệ (h"
+      }
+    ]
   },
   {
     "id": "Q34",
     "question": "Toàn bộ tài khoản doanh nghiệp có bắt buộc sử dụng cơ chế bảo vệ nào?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Bắt buộc bật xác thực hai yếu tố (2FA).",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Bắt buộc bật xác thực hai yếu tố (2FA)"
+      }
+    ]
   },
   {
     "id": "Q35",
     "question": "Nhân viên thử việc có được hưởng 12 ngày phép năm không?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Chính sách nêu rõ 12 ngày phép năm hưởng nguyên lương dành cho nhân viên toàn thời gian chính thức.",
     "category": "ambiguous",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Chính sách nêu rõ 12 ngày phép"
+      }
+    ]
   },
   {
     "id": "Q36",
     "question": "Chuyến công tác kết thúc ngày thứ Sáu thì hạn chót nộp hồ sơ thanh toán là khi nào?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Trong vòng 10 ngày làm việc kể từ ngày kết thúc chuyến công tác.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "2. Thời hạn nộp hồ sơ:",
+        "text_contains": "Trong vòng 10 ngày làm việc kể"
+      }
+    ]
   },
   {
     "id": "Q37",
     "question": "Công ty có hỗ trợ gói bảo hiểm sức khỏe nha khoa cao cấp không?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q38",
     "question": "Chi phí vé máy bay hạng thương gia có được thanh toán không?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q39",
     "question": "Nếu phát hiện lộ lọt dữ liệu nội bộ thì phải gửi email về địa chỉ nào?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "security@company.com.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "security@company"
+      }
+    ]
   },
   {
     "id": "Q40",
     "question": "Nghỉ phép 2 ngày có cần báo trước 5 ngày làm việc không?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Chỉ đơn xin nghỉ phép từ 3 ngày liên tiếp trở lên mới cần gửi đăng ký trước tối thiểu 5 ngày làm việc.",
     "category": "ambiguous",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Chỉ đơn xin nghỉ phép từ 3 ngà"
+      }
+    ]
   },
   {
     "id": "Q41",
     "question": "Pre-approval là gì và áp dụng trong trường hợp thanh toán nào?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Là phê duyệt trước bằng văn bản hoặc email từ Quản lý trực tiếp, áp dụng cho các khoản chi phí phát sinh trên 5.000.000 VND.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Là phê duyệt trước bằng văn bả"
+      }
+    ]
   },
   {
     "id": "Q42",
     "question": "Thời hạn 30 phút được quy định đối với hoạt động nào trong bảo mật?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Thời hạn nhân viên phải báo lập tức cho đội Bảo mật khi phát hiện nghi ngờ lộ thông tin hoặc tấn công mạng.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Thời hạn nhân viên phải báo lậ"
+      }
+    ]
   },
   {
     "id": "Q43",
     "question": "Quyền lợi của nhân viên thâm niên 7 năm khác gì nhân viên mới vào chính thức?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["1. Quyền lợi nghỉ phép:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "1. Quyền lợi nghỉ phép:"
+    ],
     "reference_answer": "Nhân viên chính thức có 12 ngày phép, còn nhân viên thâm niên 7 năm được cộng thêm 2 ngày phép (tổng cộng 14 ngày).",
     "category": "ambiguous",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "1. Quyền lợi nghỉ phép:",
+        "text_contains": "Nhân viên chính thức có 12 ngà"
+      }
+    ]
   },
   {
     "id": "Q44",
     "question": "Phòng Kế toán tiếp nhận hồ sơ gì và thời hạn nộp ra sao?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["2. Thời hạn nộp hồ sơ:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "2. Thời hạn nộp hồ sơ:"
+    ],
     "reference_answer": "Tiếp nhận hồ sơ thanh toán hoàn ứng chi phí công tác trong vòng 10 ngày làm việc kể từ ngày kết thúc chuyến đi.",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "2. Thời hạn nộp hồ sơ:",
+        "text_contains": "Tiếp nhận hồ sơ thanh toán hoà"
+      }
+    ]
   },
   {
     "id": "Q45",
     "question": "Có được phép ghi mật khẩu tài khoản công ty ra giấy nhớ dán ở bàn làm việc không?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["1. Quản lý tài khoản và mật khẩu:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "1. Quản lý tài khoản và mật khẩu:"
+    ],
     "reference_answer": "Tuyệt đối không chia sẻ mật khẩu cá nhân hoặc tài khoản nội bộ cho bất kỳ ai.",
     "category": "paraphrase",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "1. Quản lý tài khoản và mật khẩu:",
+        "text_contains": "Tuyệt đối không chia sẻ mật kh"
+      }
+    ]
   },
   {
     "id": "Q46",
     "question": "Chi phí thuê khách sạn 4.500.000 đồng khi công tác có cần email duyệt trước không?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Không bắt buộc phê duyệt trước vì quy định chỉ áp dụng cho các khoản chi phát sinh trên 5.000.000 VND (tuy nhiên vẫn cần hóa đơn VAT hợp lệ).",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Không bắt buộc phê duyệt trước"
+      }
+    ]
   },
   {
     "id": "Q47",
     "question": "Quy trình xin cấp thẻ taxi Grab cho nhân viên kinh doanh?",
-    "expected_sources": ["ABSTAIN"],
+    "expected_sources": [
+      "ABSTAIN"
+    ],
     "expected_documents": [],
     "expected_sections": [],
     "reference_answer": "Không đủ thông tin trong tài liệu nội bộ để trả lời câu hỏi này.",
     "category": "no_answer",
     "is_answerable": false,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": []
   },
   {
     "id": "Q48",
     "question": "Hệ thống bổ sung đơn nghỉ phép khẩn cấp có giới hạn thời gian mở là bao lâu?",
-    "expected_sources": ["policy_leave.txt"],
-    "expected_documents": ["policy_leave.txt"],
-    "expected_sections": ["2. Quy định đăng ký:"],
+    "expected_sources": [
+      "policy_leave.txt"
+    ],
+    "expected_documents": [
+      "policy_leave.txt"
+    ],
+    "expected_sections": [
+      "2. Quy định đăng ký:"
+    ],
     "reference_answer": "Trong vòng 24 giờ sau khi quay lại làm việc.",
     "category": "numeric",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "policy_leave.txt",
+        "section": "2. Quy định đăng ký:",
+        "text_contains": "Trong vòng 24 giờ sau khi quay"
+      }
+    ]
   },
   {
     "id": "Q49",
     "question": "Hai kênh tiếp nhận thông tin sự cố an ninh mạng khẩn cấp của công ty là gì?",
-    "expected_sources": ["security_guide.txt"],
-    "expected_documents": ["security_guide.txt"],
-    "expected_sections": ["2. Quy trình xử lý sự cố an ninh mạng:"],
+    "expected_sources": [
+      "security_guide.txt"
+    ],
+    "expected_documents": [
+      "security_guide.txt"
+    ],
+    "expected_sections": [
+      "2. Quy trình xử lý sự cố an ninh mạng:"
+    ],
     "reference_answer": "Email security@company.com và kênh Slack #incident-report.",
     "category": "keyword_code",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "security_guide.txt",
+        "section": "2. Quy trình xử lý sự cố an ninh mạng:",
+        "text_contains": "Email security@company"
+      }
+    ]
   },
   {
     "id": "Q50",
     "question": "Chính sách tài chính công ty áp dụng cho loại chi phí nào?",
-    "expected_sources": ["expense_policy.txt"],
-    "expected_documents": ["expense_policy.txt"],
-    "expected_sections": ["1. Điều kiện hoàn ứng:"],
+    "expected_sources": [
+      "expense_policy.txt"
+    ],
+    "expected_documents": [
+      "expense_policy.txt"
+    ],
+    "expected_sections": [
+      "1. Điều kiện hoàn ứng:"
+    ],
     "reference_answer": "Chính sách và quy trình hoàn ứng chi phí công tác.",
     "category": "factual",
     "is_answerable": true,
-    "split": "test"
+    "split": "test",
+    "expected_evidence": [
+      {
+        "document": "expense_policy.txt",
+        "section": "1. Điều kiện hoàn ứng:",
+        "text_contains": "Chính sách và quy trình hoàn ứ"
+      }
+    ]
   }
 ]

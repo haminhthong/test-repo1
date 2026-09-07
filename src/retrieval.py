@@ -145,6 +145,8 @@ class Retriever:
         min_score: float | None = None,
         dense_weight: float | None = None,
         use_reranker: bool = True,
+        user_groups: tuple[str, ...] | list[str] | None = None,
+        max_context_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
         """Tìm kiếm các đoạn văn bản liên quan nhất theo chuẩn Canonical Hybrid RAG Pipeline.
 
@@ -152,10 +154,12 @@ class Retriever:
         1. Chuẩn hóa Query.
         2. Nhánh 1: Dense Search trên FAISS -> Top candidate_k.
         3. Nhánh 2: BM25 Lexical Search trên BM25Index -> Top candidate_k.
-        4. Candidate Union: Hợp nhất toàn bộ ứng viên độc nhất từ hai nhánh.
-        5. Reciprocal Rank Fusion (RRF, k=60) -> Chọn Top 20 ứng viên tốt nhất.
-        6. Cross-Encoder Reranking: Chấm điểm tương tác chéo (query, chunk) -> Top k.
-        7. Evidence Quality Gate: Đánh giá xem bằng chứng có vượt ngưỡng tin cậy không.
+        4. ACL Authorization Filter: Loại bỏ các chunk nằm ngoài quyền truy cập của người dùng.
+        5. Candidate Union: Hợp nhất toàn bộ ứng viên độc nhất từ hai nhánh.
+        6. Reciprocal Rank Fusion (RRF, k=60) -> Chọn Top 20 ứng viên tốt nhất.
+        7. Cross-Encoder Reranking: Chấm điểm tương tác chéo (query, chunk).
+        8. Near-duplicate suppression & Diversity filter.
+        9. Evidence Quality Gate & Token Budget: Đánh giá bằng chứng theo evidence_score.
 
         Args:
             query (str): Câu hỏi của người dùng.
@@ -164,6 +168,8 @@ class Retriever:
             min_score (Optional[float]): Ngưỡng điểm tối thiểu bắt buộc của kết quả.
             dense_weight (Optional[float]): Tham số hỗ trợ tương thích ngược (nếu =1.0 chỉ dùng Dense, nếu =0.0 chỉ dùng BM25).
             use_reranker (bool): Kích hoạt Cross-Encoder reranker.
+            user_groups (Optional[Sequence[str]]): Nhóm quyền hạn của người dùng (ví dụ: ['employee', 'hr']).
+            max_context_tokens (Optional[int]): Ngân sách token tối đa cho context.
 
         Returns:
             List[Dict[str, Any]]: Danh sách các chunk liên quan nhất kèm thông tin score và gate_passed.
@@ -202,13 +208,31 @@ class Retriever:
                 bm25_ranks[idx] = rank_idx
                 bm25_scores_map[idx] = float(bm_score)
 
-        # 3. Candidate Union: Hợp nhất toàn bộ ứng viên tìm được
-        union_indices = list(set(dense_ranks.keys()) | set(bm25_ranks.keys()))
+        # 3. ACL Authorization Filter: Loại bỏ chunk không có thẩm quyền trước khi hợp nhất
+        def is_chunk_authorized(idx: int) -> bool:
+            if not user_groups:
+                return True
+            chunk_data = self.chunks[idx]
+            scopes = chunk_data.get("security_scope")
+            if scopes is None:
+                sec_obj = chunk_data.get("security", {})
+                scopes = sec_obj.get("allowed_groups", ["public"]) if isinstance(sec_obj, dict) else ["public"]
+            if isinstance(scopes, str):
+                scopes = [scopes]
+            if "public" in scopes:
+                return True
+            return any(g in scopes for g in user_groups)
+
+        filtered_dense_ranks = {i: r for i, r in dense_ranks.items() if is_chunk_authorized(i)}
+        filtered_bm25_ranks = {i: r for i, r in bm25_ranks.items() if is_chunk_authorized(i)}
+
+        # 4. Candidate Union: Hợp nhất toàn bộ ứng viên được cấp quyền
+        union_indices = list(set(filtered_dense_ranks.keys()) | set(filtered_bm25_ranks.keys()))
         if not union_indices:
             return []
 
-        # 4. Reciprocal Rank Fusion (RRF)
-        rrf_scores = reciprocal_rank_fusion(dense_ranks, bm25_ranks, k=self.rrf_k)
+        # 5. Reciprocal Rank Fusion (RRF)
+        rrf_scores = reciprocal_rank_fusion(filtered_dense_ranks, filtered_bm25_ranks, k=self.rrf_k)
 
         candidate_items: list[dict[str, Any]] = []
         for idx in union_indices:
@@ -220,8 +244,8 @@ class Retriever:
             item["dense_score"] = round(d_sc, 4)
             item["bm25_score"] = round(b_sc, 4)
             item["rrf_score"] = round(r_sc, 6)
-            item["dense_rank"] = dense_ranks.get(idx)
-            item["bm25_rank"] = bm25_ranks.get(idx)
+            item["dense_rank"] = filtered_dense_ranks.get(idx)
+            item["bm25_rank"] = filtered_bm25_ranks.get(idx)
             item["chunk_index_in_corpus"] = idx
             candidate_items.append(item)
 
@@ -231,23 +255,62 @@ class Retriever:
         # Chọn Top 20 ứng viên tốt nhất đi vào Cross-Encoder Reranker
         top_rrf_pool = candidate_items[: min(20, len(candidate_items))]
 
-        # 5. Cross-Encoder Reranker
+        # 6. Cross-Encoder Reranking
         if use_reranker:
-            reranked = self.reranker.rerank(clean_query, top_rrf_pool, top_k=effective_k)
+            reranked = self.reranker.rerank(clean_query, top_rrf_pool, top_k=min(10, len(top_rrf_pool)))
         else:
-            # Nếu không dùng reranker, điểm retrieval_score chính là chuẩn hóa của RRF
+            # Nếu không dùng reranker, ánh xạ RRF score về [0, 1]
+            max_possible_rrf = 2.0 / (self.rrf_k + 1)
             for item in top_rrf_pool:
-                item["retrieval_score"] = round(item["rrf_score"] * 30.0, 4)
-                item["rerank_score"] = item["retrieval_score"]
-            reranked = top_rrf_pool[:effective_k]
+                normalized = min(max(item["rrf_score"] / max_possible_rrf, 0.0), 1.0)
+                sc = round(normalized, 4)
+                item["evidence_score"] = sc
+                item["reranker_score"] = None
+                item["retrieval_score"] = sc
+                item["rerank_score"] = sc
+            reranked = top_rrf_pool[:min(10, len(top_rrf_pool))]
 
-        # 6. Evidence Quality Gate
+        # 7. Near-Duplicate Suppression (bảo toàn tính đa dạng của evidence)
+        selected_diverse: list[dict[str, Any]] = []
+        for cand in reranked:
+            cand_tokens = set(cand.get("text", "").split())
+            is_near_dup = False
+            for sel in selected_diverse:
+                if sel.get("document_id") == cand.get("document_id") and sel.get("section") == cand.get("section"):
+                    sel_tokens = set(sel.get("text", "").split())
+                    jaccard = len(cand_tokens & sel_tokens) / max(1, len(cand_tokens | sel_tokens))
+                    if jaccard > 0.85:
+                        is_near_dup = True
+                        break
+            if not is_near_dup:
+                selected_diverse.append(cand)
+            if len(selected_diverse) >= effective_k:
+                break
+
+        if not selected_diverse and reranked:
+            selected_diverse = reranked[:effective_k]
+
+        # 8. Token Budget Constraint
+        if max_context_tokens is not None:
+            budget_hits: list[dict[str, Any]] = []
+            used_tokens = 0
+            for item in selected_diverse:
+                approx_tokens = int(len(item.get("text", "").split()) * 1.3)
+                if used_tokens + approx_tokens > max_context_tokens and budget_hits:
+                    break
+                budget_hits.append(item)
+                used_tokens += approx_tokens
+            selected_diverse = budget_hits
+
+        # 9. Evidence Quality Gate
         gate_threshold = min_score if min_score is not None else self.evidence_gate_threshold
         final_results: list[dict[str, Any]] = []
 
-        for item in reranked:
-            score = item.get("retrieval_score", 0.0)
-            item["score"] = score  # Giữ trường score cho tương thích ngược
+        for item in selected_diverse:
+            score = float(item.get("evidence_score", item.get("retrieval_score", 0.0)))
+            item["score"] = score
+            item["retrieval_score"] = score
+            item["evidence_score"] = score
             item["lexical_score"] = (
                 item["bm25_score"] / 20.0 if item["bm25_score"] > 0 else 0.0
             )
@@ -262,3 +325,4 @@ class Retriever:
             final_results.append(item)
 
         return final_results
+

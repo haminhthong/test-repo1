@@ -1,11 +1,15 @@
 setup:
 	python -m pip install -r requirements.txt
 
-download:
+ingest:
 	python scripts/download_data.py
 
-train:
-	python -m src.train
+download: ingest
+
+index:
+	python -m src.index
+
+train: index
 
 evaluate:
 	python -m src.evaluate
@@ -17,5 +21,4 @@ serve:
 	uvicorn src.api:app --host 0.0.0.0 --port 8000
 
 test:
-	pytest -q
-
+	pytest -v

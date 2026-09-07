@@ -34,7 +34,6 @@ from src.retrieval import Retriever
 from src.utils import save_json, setup_logging
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.ablation")
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_rag_ablation(

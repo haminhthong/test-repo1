@@ -116,3 +116,63 @@ def test_chunk_id_collision_resistance_across_directories():
 
     assert chunk_hr.chunk_id != chunk_fin.chunk_id
     assert chunk_hr.document_id != chunk_fin.document_id
+
+
+def test_chunk_quality_contract_validation():
+    """Kiểm tra Chunk Quality Contract phát hiện lỗi rỗng hoặc trùng lặp."""
+    from src.ingestion import validate_chunk_quality_contract
+
+    valid_chunks = [
+        Chunk(chunk_id="doc1:p0:c000", text="Nội dung 1", source="doc1.txt"),
+        Chunk(chunk_id="doc1:p0:c001", text="Nội dung 2", source="doc1.txt"),
+    ]
+    report = validate_chunk_quality_contract(valid_chunks)
+    assert report["passed"] is True
+
+    # Trường hợp vi phạm: Chunk rỗng
+    invalid_chunks = [
+        Chunk(chunk_id="doc1:p0:c000", text="   ", source="doc1.txt"),
+    ]
+    with pytest.raises(ValueError, match="Chunk Quality Contract"):
+        validate_chunk_quality_contract(invalid_chunks)
+
+
+def test_detect_corpus_changes_logic():
+    """Kiểm tra phát hiện tài liệu mới, sửa đổi, giữ nguyên và bị xóa."""
+    import tempfile
+    from pathlib import Path
+    from src.index import detect_corpus_changes
+    from src.utils import compute_file_checksum
+
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_path = Path(tmp_dir_str)
+
+        doc1 = tmp_path / "doc1.txt"
+        doc1.write_text("Phiên bản 1", encoding="utf-8")
+        hash1 = compute_file_checksum(doc1)
+
+        registry = {
+            "doc1.txt": {
+                "document_id": "doc1",
+                "checksum": hash1,
+                "status": "ACTIVE",
+            },
+            "deleted_doc.txt": {
+                "document_id": "del_doc",
+                "checksum": "abc123",
+                "status": "ACTIVE",
+            },
+        }
+
+        # Thêm doc2 mới
+        doc2 = tmp_path / "doc2.txt"
+        doc2.write_text("Tài liệu mới", encoding="utf-8")
+
+        changes = detect_corpus_changes(tmp_path, registry)
+        assert len(changes["new"]) == 1
+        assert changes["new"][0].name == "doc2.txt"
+        assert len(changes["unchanged"]) == 1
+        assert changes["unchanged"][0].name == "doc1.txt"
+        assert changes["deleted"] == ["deleted_doc.txt"]
+
+
