@@ -4,9 +4,9 @@ Cung cấp các endpoint chuẩn doanh nghiệp:
 - GET /health: Liveness & Readiness tổng quan.
 - GET /health/live: Liveness probe cho container/orchestrator.
 - GET /health/ready: Readiness probe chuyên sâu kiểm tra toàn vẹn FAISS, BM25, và reranker_mode.
-- POST /v1/query (và alias /query): Endpoint production nghiêm ngặt, chỉ nhận question & security scope.
-  Khóa cứng cấu hình retrieval phía server, ngăn client bypass canonical policy.
-- POST /internal/debug/retrieve: Endpoint nghiên cứu nội bộ cho phép tùy biến tham số ablation & debug.
+- POST /v1/query (và alias /query): Endpoint production chỉ nhận question;
+  identity/ACL đến từ X-API-Key và mapping server-side.
+- POST /internal/debug/retrieve: Endpoint admin-only, bị tắt trong production.
 - POST /v1/feedback: Thu thập phản hồi người dùng phục vụ Continuous Evaluation Loop.
 """
 
@@ -15,13 +15,19 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from .security import (
+    AccessContext,
+    AuthenticationError,
+    access_context_from_api_key,
+    is_admin_api_key,
+)
 from .service import QueryRequest, RAGService
 from .utils import load_json, setup_logging
 
@@ -42,11 +48,26 @@ app = FastAPI(
         "kết hợp Dense FAISS, BM25Okapi, RRF, Cross-Encoder Reranking, "
         "Evidence Quality Gate và Claim-Level Citations."
     ),
-    version="2.1.0",
+    version="3.0.0",
 )
 
 _retriever: Retriever | None = None
 _rag_service: RAGService | None = None
+
+
+def _effective_index_dir() -> Path:
+    """Lấy release mà active pointer đang trỏ tới để health không đọc artifact cũ."""
+    pointer = INDEX_DIR / "active_index.json"
+    if not pointer.exists():
+        return INDEX_DIR
+    try:
+        target = Path(str(load_json(pointer).get("release_path", "")))
+        target = target if target.is_absolute() else INDEX_DIR / target
+        index_root = INDEX_DIR.resolve()
+        resolved_target = target.resolve()
+        return resolved_target if resolved_target.is_relative_to(index_root) else INDEX_DIR
+    except Exception:  # noqa: BLE001
+        return INDEX_DIR
 
 
 def get_retriever() -> Retriever:
@@ -69,6 +90,16 @@ def get_rag_service() -> RAGService:
     return _rag_service
 
 
+def get_access_context(request: Request) -> AccessContext:
+    """Tạo trusted AccessContext từ header, không đọc quyền trong request body."""
+    try:
+        return access_context_from_api_key(request.headers.get("X-API-Key"))
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=401, detail="X-API-Key không hợp lệ hoặc bị thiếu."
+        ) from exc
+
+
 # ==============================================================================
 # SCHEMAS
 # ==============================================================================
@@ -77,7 +108,8 @@ def get_rag_service() -> RAGService:
 class QueryIn(BaseModel):
     """Payload đầu vào cho yêu cầu hỏi đáp production /v1/query.
 
-    Client CHỈ được truyền câu hỏi và thẩm quyền danh tính (Access Scope).
+    Client CHỈ được truyền câu hỏi. Danh tính và quyền được server suy ra từ
+    X-API-Key; không có trường user_groups trong contract.
     Toàn bộ tham số pipeline (k, reranker, threshold, fusion) do Server áp đặt.
     """
 
@@ -88,10 +120,7 @@ class QueryIn(BaseModel):
         description="Câu hỏi bằng tiếng Việt cần tra cứu tri thức",
         json_schema_extra={"example": "Nhân viên chính thức có bao nhiêu ngày phép năm?"},
     )
-    user_groups: list[str] = Field(
-        default=["public", "employee"],
-        description="Danh sách nhóm thẩm quyền bảo mật của người dùng (Access Context)",
-    )
+    model_config = ConfigDict(extra="ignore")
 
 
 class CitationItem(BaseModel):
@@ -99,6 +128,8 @@ class CitationItem(BaseModel):
 
     id: str = Field(..., description="Mã trích dẫn (ví dụ: C1, C2)")
     document: str = Field(..., description="Tên tệp tài liệu gốc")
+    document_id: str = Field(default="", description="ID ổn định của tài liệu")
+    version: str = Field(default="", description="Version lấy từ catalog")
     source_path: str = Field(..., description="Đường dẫn tương đối của tài liệu")
     page: int | None = Field(None, description="Số trang tương ứng (khi khả dụng)")
     section: str | None = Field(None, description="Tên phần/chương/mục chứa trích dẫn")
@@ -115,29 +146,18 @@ class SourceItem(BaseModel):
     source_path: str = Field(..., description="Đường dẫn tương đối của tệp")
     page: int | None = Field(None, description="Số trang tương ứng (khi có)")
     section: str | None = Field(None, description="Tiêu đề mục chứa chunk")
-    retrieval_score: float = Field(
-        ..., description="Điểm xếp hạng độ liên quan chuẩn hóa [0.0 - 1.0]"
-    )
-    score: float = Field(..., description="Điểm số tương thích ngược")
-    dense_score: float = Field(..., description="Điểm tương đồng Cosine ngữ nghĩa")
-    bm25_score: float = Field(..., description="Điểm từ khóa BM25")
-    evidence_score: float | None = Field(None, description="Điểm đánh giá bằng chứng")
-    rerank_score: float | None = Field(None, description="Điểm sau Cross-Encoder Reranking")
+    version: str = Field(default="", description="Version lấy từ catalog")
 
 
 class QueryOut(BaseModel):
     """Payload đầu ra chuẩn hóa cho câu trả lời và trích dẫn theo Architecture v2."""
 
     request_id: str = Field(..., description="Mã truy vết duy nhất của request")
-    answer: str = Field(
-        ..., description="Câu trả lời tổng hợp căn thực hoặc thông báo từ chối"
-    )
+    answer: str = Field(..., description="Câu trả lời tổng hợp căn thực hoặc thông báo từ chối")
     decision: dict[str, Any] = Field(
         ..., description="Quyết định hệ thống (action, answerable, reason)"
     )
-    retrieval: dict[str, Any] = Field(
-        ..., description="Thống kê ứng viên và chế độ reranker"
-    )
+    retrieval: dict[str, Any] = Field(..., description="Thống kê ứng viên và chế độ reranker")
     grounding: dict[str, Any] = Field(
         ..., description="Chỉ số căn thực bằng chứng (evidence_score, gate_passed, citation_valid)"
     )
@@ -147,15 +167,13 @@ class QueryOut(BaseModel):
     )
     sources: list[SourceItem] = Field(
         default_factory=list,
-        description="Danh sách toàn bộ các nguồn tài liệu ứng viên được duyệt",
+        description="Metadata nguồn đã được ACL duyệt, không gồm điểm debug",
     )
-    versions: dict[str, str] = Field(
-        ..., description="Phiên bản model, index và reranker_mode"
-    )
+    versions: dict[str, str] = Field(..., description="Phiên bản model, index và reranker_mode")
     # Các trường tương thích ngược (Backward compatibility)
-    model_version: str = Field(default="rag-evidence-v2")
+    model_version: str = Field(default="enterprise-rag-v1")
     index_version: str = Field(default="unknown")
-    evidence_gate_passed: bool = Field(default=True)
+    evidence_gate_passed: bool = Field(default=False)
 
 
 class DebugRetrieveIn(BaseModel):
@@ -165,9 +183,7 @@ class DebugRetrieveIn(BaseModel):
     top_k: int = 4
     candidate_k: int | None = None
     min_score: float | None = None
-    dense_weight: float | None = None
     use_reranker: bool = True
-    user_groups: list[str] | None = None
 
 
 class FeedbackIn(BaseModel):
@@ -192,8 +208,9 @@ class FeedbackIn(BaseModel):
 )
 def health() -> dict[str, Any]:
     """Kiểm tra tổng quan trạng thái, không làm lộ đường dẫn filesystem."""
+    effective_dir = _effective_index_dir()
     required_files = ("config.json", "index.faiss", "chunks.json")
-    ready = all((INDEX_DIR / filename).exists() for filename in required_files)
+    ready = all((effective_dir / filename).exists() for filename in required_files)
 
     model_version = "not_trained"
     index_version = "none"
@@ -201,10 +218,15 @@ def health() -> dict[str, Any]:
 
     if ready:
         try:
-            config_data = load_json(INDEX_DIR / "config.json")
-            model_version = config_data.get("model_version", "rag-evidence-v2")
+            config_data = load_json(effective_dir / "config.json")
+            model_version = config_data.get("model_version", "enterprise-rag-v1")
             index_version = config_data.get("index_version", "unknown")
             chunk_count = config_data.get("chunk_count", 0)
+            ready = (
+                ready
+                and int(config_data.get("schema_version", 0)) >= 3
+                and (effective_dir / "shards").exists()
+            )
         except Exception:  # noqa: BLE001
             ready = False
 
@@ -226,7 +248,7 @@ def health_live() -> dict[str, Any]:
     """Kiểm tra tiến trình API đang hoạt động bình thường."""
     return {
         "status": "alive",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -237,8 +259,9 @@ def health_live() -> dict[str, Any]:
 )
 def health_ready() -> dict[str, Any]:
     """Kiểm tra chuyên sâu: FAISS index, chunks.json, BM25, và reranker_mode."""
+    effective_dir = _effective_index_dir()
     required_files = ("config.json", "index.faiss", "chunks.json", "bm25_index.json")
-    missing = [f for f in required_files if not (INDEX_DIR / f).exists()]
+    missing = [f for f in required_files if not (effective_dir / f).exists()]
 
     if missing:
         raise HTTPException(
@@ -247,8 +270,12 @@ def health_ready() -> dict[str, Any]:
         )
 
     try:
-        config_data = load_json(INDEX_DIR / "config.json")
-        chunks_data = load_json(INDEX_DIR / "chunks.json")
+        config_data = load_json(effective_dir / "config.json")
+        chunks_data = load_json(effective_dir / "chunks.json")
+        if int(config_data.get("schema_version", 0)) < 3 or not (effective_dir / "shards").exists():
+            raise HTTPException(
+                status_code=503, detail="Active index chưa phải release V1 có ACL shards."
+            )
         retriever_inst = get_retriever()
 
         if retriever_inst.index.ntotal != len(chunks_data):
@@ -264,12 +291,12 @@ def health_ready() -> dict[str, Any]:
 
         return {
             "status": "ready",
-            "model_version": config_data.get("model_version", "rag-evidence-v2"),
+            "model_version": config_data.get("model_version", "enterprise-rag-v1"),
             "index_version": config_data.get("index_version", "unknown"),
             "vector_dimension": config_data.get("vector_dimension"),
             "total_chunks": len(chunks_data),
             "reranker_mode": reranker_mode,
-            "reranker_ready": reranker_mode != "disabled",
+            "reranker_ready": reranker_mode == "neural",
         }
     except HTTPException:
         raise
@@ -292,14 +319,15 @@ def health_ready() -> dict[str, Any]:
     include_in_schema=False,
 )
 def query(payload: QueryIn, request: Request) -> QueryOut:
-    """Production Endpoint: Nhận câu hỏi, áp đặt toàn bộ chính sách retrieval từ server."""
+    """Production endpoint với AccessContext được xác thực từ X-API-Key."""
     request_id = getattr(request.state, "request_id", None) or f"req_{uuid.uuid4().hex[:12]}"
 
     try:
+        access_context = get_access_context(request)
         rag_svc = get_rag_service()
         req_obj = QueryRequest(
             question=payload.question,
-            user_groups=tuple(payload.user_groups),
+            access_context=access_context,
             request_id=request_id,
         )
         res = rag_svc.answer(req_obj)
@@ -319,20 +347,17 @@ def query(payload: QueryIn, request: Request) -> QueryOut:
                     source_path=s.get("source_path", s.get("source", "")),
                     page=s.get("page"),
                     section=s.get("section"),
-                    retrieval_score=float(s.get("retrieval_score", 0.0)),
-                    score=float(s.get("score", s.get("retrieval_score", 0.0))),
-                    dense_score=float(s.get("dense_score", 0.0)),
-                    bm25_score=float(s.get("bm25_score", 0.0)),
-                    evidence_score=float(s.get("evidence_score", 0.0)) if s.get("evidence_score") is not None else None,
-                    rerank_score=float(s.get("rerank_score", 0.0)) if s.get("rerank_score") is not None else None,
+                    version=str(s.get("version", "")),
                 )
                 for s in res.sources
             ],
             versions=res.versions,
-            model_version=res.versions.get("model_version", "rag-evidence-v2"),
-            index_version=res.versions.get("index_version", "unknown"),
+            model_version=res.versions.get("model_version", "enterprise-rag-v1"),
+            index_version=res.versions.get("index", "unknown"),
             evidence_gate_passed=bool(res.grounding.get("evidence_gate_passed", True)),
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         LOGGER.exception("[req=%s] Lỗi không mong muốn khi xử lý query: %s", request_id, exc)
         raise HTTPException(status_code=500, detail="Lỗi nội bộ dịch vụ RAG.") from exc
@@ -340,20 +365,25 @@ def query(payload: QueryIn, request: Request) -> QueryOut:
 
 @app.post(
     "/internal/debug/retrieve",
-    summary="Endpoint nghiên cứu & debug: Cho phép tùy biến toàn bộ cờ retrieval",
+    summary="Endpoint admin nghiên cứu & debug (tắt trong production)",
     response_model=dict[str, Any],
 )
-def debug_retrieve(payload: DebugRetrieveIn) -> dict[str, Any]:
-    """Endpoint dùng cho thử nghiệm, ablation benchmark, và kiểm thử kỹ thuật."""
+def debug_retrieve(payload: DebugRetrieveIn, request: Request) -> dict[str, Any]:
+    """Endpoint admin-only; production không expose debug retrieval."""
+    import os
+
+    if os.getenv("ENV", "development").lower() == "production":
+        raise HTTPException(status_code=404, detail="Endpoint không tồn tại trong production.")
+    if not is_admin_api_key(request.headers.get("X-API-Key")):
+        raise HTTPException(status_code=403, detail="Chỉ admin mới được dùng endpoint debug.")
     retriever_inst = get_retriever()
     hits = retriever_inst.search(
         query=payload.question,
         k=payload.top_k,
         candidate_k=payload.candidate_k,
         min_score=payload.min_score,
-        dense_weight=payload.dense_weight,
         use_reranker=payload.use_reranker,
-        user_groups=payload.user_groups,
+        user_groups=("employee", "hr", "finance", "security"),
     )
     return {
         "question": payload.question,
@@ -374,7 +404,7 @@ def record_feedback(payload: FeedbackIn) -> dict[str, str]:
     feedback_file = FEEDBACK_DIR / "feedback.jsonl"
 
     record = payload.model_dump()
-    record["received_at"] = datetime.now(timezone.utc).isoformat()
+    record["received_at"] = datetime.now(UTC).isoformat()
 
     try:
         with feedback_file.open("a", encoding="utf-8") as f:

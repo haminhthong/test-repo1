@@ -1,25 +1,10 @@
-"""Script tự động hóa các nghiên cứu thực nghiệm bóc tách (Ablation Experiments).
-
-Thực hiện 2 nghiên cứu bóc tách chuẩn mực AI Engineering:
-1. RAG Pipeline Ablation:
-   - Dense Only
-   - BM25 Only
-   - Dense + BM25 (Linear Fusion)
-   - Dense + BM25 (RRF)
-   - Dense + BM25 + RRF + Cross-Encoder Reranker
-   - Canonical RAG (+ Evidence Gate)
-2. Chunking Strategy Ablation:
-   - Sliding Window: 120 words / 20 overlap
-   - Sliding Window: 220 words / 30 overlap
-   - Sliding Window: 350 words / 50 overlap
-   - Structure-Aware Chunking (Sentence Boundaries & Heading Packing)
-"""
+"""Ablation chỉ chạy trên DEV; LOCKED TEST chỉ dùng cho final evaluation."""
 
 from __future__ import annotations
 
 import logging
-import time
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,201 +16,131 @@ from src.config import IndexConfig
 from src.evaluate import calculate_retrieval_metrics, load_benchmark
 from src.index import build_index
 from src.retrieval import Retriever
+from src.security import AccessContext
 from src.utils import save_json, setup_logging
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.ablation")
+DEV_ACCESS = AccessContext(
+    user_id="benchmark-dev",
+    groups=("employee", "hr", "finance", "security"),
+    auth_method="offline-benchmark",
+)
+
+
+def _retrieval_rows(
+    retriever: Retriever, cases: list[Any], dense_weight: float | None, use_reranker: bool
+) -> dict[str, Any]:
+    answerable = [case for case in cases if case.is_answerable]
+    ranked: list[list[str]] = []
+    expected: list[set[str]] = []
+    latencies: list[float] = []
+    for case in answerable:
+        started = time.perf_counter()
+        hits = retriever.search(
+            case.question,
+            k=4,
+            dense_weight=dense_weight,
+            use_reranker=use_reranker,
+            access_context=DEV_ACCESS,
+            min_score=0.0,
+        )
+        latencies.append(time.perf_counter() - started)
+        ranked.append([str(hit.get("source", "")) for hit in hits])
+        expected.append(set(case.expected_documents or case.expected_sources))
+    metrics = calculate_retrieval_metrics(ranked, expected, latencies, k=4)
+    return {
+        "recall_at_k": metrics["recall_at_k"],
+        "hit_rate_at_1": metrics["hit_rate_at_1"],
+        "mrr": metrics["mrr"],
+        "ndcg_at_k": metrics["ndcg_at_k"],
+        "avg_latency_ms": metrics["avg_latency_ms"],
+        "p95_latency_ms": metrics["p95_latency_ms"],
+    }
 
 
 def run_rag_ablation(
-    retriever: Retriever,
-    test_cases: list[Any],
-    output_path: Path,
+    retriever: Retriever, dev_cases: list[Any], output_path: Path
 ) -> dict[str, Any]:
-    """Chạy ablation các thành phần trong RAG pipeline."""
-    LOGGER.info("--- Bắt đầu RAG Component Ablation ---")
-
-    ans_cases = [c for c in test_cases if c.is_answerable]
-    expected_sources = [set(c.expected_documents or c.expected_sources) for c in ans_cases]
-
+    """So sánh các pipeline đã định nghĩa trước trên DEV, không sweep Test."""
     configurations = [
-        {"name": "1. Dense Only (FAISS)", "dense_weight": 1.0, "use_reranker": False, "use_gate": False},
-        {"name": "2. BM25 Only (BM25Okapi)", "dense_weight": 0.0, "use_reranker": False, "use_gate": False},
-        {"name": "3. Dense + BM25 (Linear Fusion)", "dense_weight": 0.85, "use_reranker": False, "use_gate": False},
-        {"name": "4. Dense + BM25 (RRF Union)", "dense_weight": None, "use_reranker": False, "use_gate": False},
-        {"name": "5. RRF + Cross-Encoder Reranker", "dense_weight": None, "use_reranker": True, "use_gate": False},
-        {"name": "6. Canonical RAG (+ Evidence Gate)", "dense_weight": None, "use_reranker": True, "use_gate": True},
+        {"name": "BM25 Only", "dense_weight": 0.0, "use_reranker": False},
+        {"name": "Dense Only", "dense_weight": 1.0, "use_reranker": False},
+        {"name": "Dense + BM25 + RRF", "dense_weight": None, "use_reranker": False},
+        {"name": "RRF + Multilingual Reranker", "dense_weight": None, "use_reranker": True},
     ]
-
-    ablation_results: list[dict[str, Any]] = []
-
-    for cfg in configurations:
-        name = cfg["name"]
-        dw = cfg["dense_weight"]
-        rerank = cfg["use_reranker"]
-        gate = cfg["use_gate"]
-
-        ranked_docs: list[list[str]] = []
-        latencies: list[float] = []
-
-        for case in ans_cases:
-            t0 = time.perf_counter()
-            hits = retriever.search(
-                case.question,
-                k=4,
-                dense_weight=dw,
-                use_reranker=rerank,
-            )
-            latencies.append(time.perf_counter() - t0)
-
-            if gate:
-                # Lọc các kết quả không vượt qua Evidence Gate
-                valid_hits = [h for h in hits if h.get("gate_passed", True)]
-            else:
-                valid_hits = hits
-
-            ranked_docs.append([str(h.get("source", "")) for h in valid_hits])
-
-        metrics = calculate_retrieval_metrics(ranked_docs, expected_sources, latencies)
-        result_item = {
-            "component": name,
-            "recall_at_k": metrics["recall_at_k"],
-            "hit_rate_at_1": metrics["hit_rate_at_1"],
-            "mrr": metrics["mrr"],
-            "ndcg_at_k": metrics["ndcg_at_k"],
-            "avg_latency_ms": metrics["avg_latency_ms"],
-            "p95_latency_ms": metrics["p95_latency_ms"],
-        }
-        ablation_results.append(result_item)
-
+    results = []
+    for configuration in configurations:
+        row = _retrieval_rows(
+            retriever,
+            dev_cases,
+            configuration["dense_weight"],
+            configuration["use_reranker"],
+        )
+        results.append({"pipeline": configuration["name"], **row})
     report = {
-        "title": "RAG Component Ablation Study",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "total_test_cases": len(ans_cases),
-        "results": ablation_results,
+        "schema_version": 3,
+        "selection_split": "dev",
+        "locked_test_accessed": False,
+        "results": results,
     }
     save_json(output_path, report)
-    LOGGER.info("Đã lưu kết quả RAG ablation tại: %s", output_path.resolve())
     return report
 
 
 def run_chunk_ablation(
     data_dir: str,
     temp_dir: Path,
-    test_cases: list[Any],
+    dev_cases: list[Any],
     output_path: Path,
 ) -> dict[str, Any]:
-    """Chạy ablation các cấu hình chunking."""
-    LOGGER.info("--- Bắt đầu Chunk-Size & Strategy Ablation ---")
-
-    ans_cases = [c for c in test_cases if c.is_answerable]
-    expected_sources = [set(c.expected_documents or c.expected_sources) for c in ans_cases]
-
+    """Chọn chunk config trên DEV; không dùng locked test để chọn."""
     chunk_configs = [
-        {"name": "Sliding Window (120w / 20o)", "strategy": "sliding_window", "chunk_words": 120, "overlap_words": 20},
-        {"name": "Sliding Window (220w / 30o)", "strategy": "sliding_window", "chunk_words": 220, "overlap_words": 30},
-        {"name": "Sliding Window (350w / 50o)", "strategy": "sliding_window", "chunk_words": 350, "overlap_words": 50},
-        {"name": "Structure-Aware (Sentence Packing)", "strategy": "structure_aware", "chunk_words": 250, "overlap_words": 40},
+        ("Sliding Window 120/20", "sliding_window", 120, 20),
+        ("Sliding Window 220/30", "sliding_window", 220, 30),
+        ("Sliding Window 350/50", "sliding_window", 350, 50),
+        ("Structure-Aware 250/40", "structure_aware", 250, 40),
     ]
-
-    chunk_results: list[dict[str, Any]] = []
-
-    for cfg in chunk_configs:
-        cfg_name = cfg["name"]
-        model_subdir = temp_dir / f"index_{cfg['strategy']}_{cfg['chunk_words']}"
-
-        idx_config = IndexConfig(
+    results = []
+    for name, strategy, chunk_words, overlap_words in chunk_configs:
+        model_dir = temp_dir / f"{strategy}_{chunk_words}"
+        config = IndexConfig(
             data_dir=data_dir,
-            model_dir=str(model_subdir),
-            chunk_words=cfg["chunk_words"],
-            overlap_words=cfg["overlap_words"],
-            strategy=cfg["strategy"],
-            use_reranker=False,  # Để đo thuần túy tác động của chunking lên retrieval
+            model_dir=str(model_dir),
+            catalog_path="configs/knowledge_catalog.yaml",
+            strategy=strategy,
+            chunk_words=chunk_words,
+            overlap_words=overlap_words,
+            use_reranker=False,
         )
-        build_index(idx_config)
-
-        temp_retriever = Retriever(model_dir=str(model_subdir), use_reranker=False)
-
-        ranked_docs: list[list[str]] = []
-        latencies: list[float] = []
-
-        for case in ans_cases:
-            t0 = time.perf_counter()
-            hits = temp_retriever.search(case.question, k=4, use_reranker=False)
-            latencies.append(time.perf_counter() - t0)
-            ranked_docs.append([str(h.get("source", "")) for h in hits])
-
-        metrics = calculate_retrieval_metrics(ranked_docs, expected_sources, latencies)
-        chunk_results.append(
-            {
-                "strategy": cfg_name,
-                "total_chunks": len(temp_retriever.chunks),
-                "recall_at_k": metrics["recall_at_k"],
-                "hit_rate_at_1": metrics["hit_rate_at_1"],
-                "mrr": metrics["mrr"],
-                "ndcg_at_k": metrics["ndcg_at_k"],
-                "avg_latency_ms": metrics["avg_latency_ms"],
-            }
-        )
-
+        build_index(config)
+        retriever = Retriever(model_dir=model_dir, use_reranker=False)
+        row = _retrieval_rows(retriever, dev_cases, None, False)
+        results.append({"strategy": name, "total_chunks": len(retriever.chunks), **row})
     report = {
-        "title": "Chunk-Size & Strategy Ablation Study",
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "results": chunk_results,
+        "schema_version": 3,
+        "selection_split": "dev",
+        "locked_test_accessed": False,
+        "results": results,
     }
     save_json(output_path, report)
-    LOGGER.info("Đã lưu kết quả Chunk ablation tại: %s", output_path.resolve())
     return report
 
 
 def main() -> None:
-    """Hàm chính điều phối các thực nghiệm ablation."""
     setup_logging()
-    cases = load_benchmark(PROJECT_ROOT / "data/evaluation/questions.json")
-    test_cases = [c for c in cases if c.split == "test"]
-
-    # Đảm bảo index chính tồn tại
-    retriever = Retriever(model_dir=PROJECT_ROOT / "models/rag_index")
-
-    # 1. RAG Component Ablation
-    rag_rep = run_rag_ablation(
-        retriever,
-        test_cases,
-        PROJECT_ROOT / "reports/rag_ablation.json",
+    benchmark_path = PROJECT_ROOT / "data/evaluation/synthetic_regression.json"
+    if not benchmark_path.exists():
+        benchmark_path = PROJECT_ROOT / "data/evaluation/questions.json"
+    cases = load_benchmark(benchmark_path)
+    dev_cases = [case for case in cases if case.split == "dev"]
+    retriever = Retriever(model_dir=PROJECT_ROOT / "models/rag_index", use_reranker=True)
+    run_rag_ablation(retriever, dev_cases, PROJECT_ROOT / "reports/rag_ablation.json")
+    run_chunk_ablation(
+        "data/raw",
+        PROJECT_ROOT / "models/ablation_scratch",
+        dev_cases,
+        PROJECT_ROOT / "reports/chunk_ablation.json",
     )
-
-    # 2. Chunk Ablation
-    chunk_rep = run_chunk_ablation(
-        data_dir="data/raw",
-        temp_dir=PROJECT_ROOT / "models/ablation_scratch",
-        test_cases=test_cases,
-        output_path=PROJECT_ROOT / "reports/chunk_ablation.json",
-    )
-
-    print("\n" + "=" * 90)
-    print(" RAG COMPONENT ABLATION REPORT")
-    print("=" * 90)
-    print(f"{'Component':<36} | {'Recall@K':<10} | {'Hit@1':<8} | {'MRR':<8} | {'nDCG':<8} | {'P95 Latency':<10}")
-    print("-" * 90)
-    for row in rag_rep["results"]:
-        print(
-            f"{row['component']:<36} | {row['recall_at_k']:<10.4f} | "
-            f"{row['hit_rate_at_1']:<8.4f} | {row['mrr']:<8.4f} | "
-            f"{row['ndcg_at_k']:<8.4f} | {row['p95_latency_ms']:<8.2f} ms"
-        )
-    print("=" * 90)
-
-    print("\n" + "=" * 90)
-    print(" CHUNKING STRATEGY ABLATION REPORT")
-    print("=" * 90)
-    print(f"{'Strategy':<36} | {'Chunks':<8} | {'Recall@K':<10} | {'MRR':<8} | {'Latency':<10}")
-    print("-" * 90)
-    for row in chunk_rep["results"]:
-        print(
-            f"{row['strategy']:<36} | {row['total_chunks']:<8} | "
-            f"{row['recall_at_k']:<10.4f} | {row['mrr']:<8.4f} | "
-            f"{row['avg_latency_ms']:<8.2f} ms"
-        )
-    print("=" * 90 + "\n")
 
 
 if __name__ == "__main__":

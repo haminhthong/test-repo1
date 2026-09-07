@@ -1,29 +1,30 @@
-"""Xây dựng và Lưu trữ chỉ mục tri thức chính quy (Enterprise Indexing Module).
-
-Tệp này quản lý:
-1. Document Registry theo dõi trạng thái tài liệu (DocumentRecord: path, checksum, version, ACL scope, status).
-2. Phát hiện thay đổi gia tăng (Incremental Change Detection: NEW, CHANGED, UNCHANGED, DELETED/TOMBSTONE).
-3. Parser Quality Gate & Chunk Quality Contract (chặn empty chunks, duplicate chunk_ids, parse rác).
-4. Vectorize bằng SentenceTransformers và lập FAISS FlatIP Dense Index.
-5. Lập BM25Okapi Lexical Index độc lập.
-6. Đóng gói Versioned Index Artifacts (index.faiss, chunks.json, bm25_index.json, document_registry.json, quality_report.json, config.json).
-"""
+"""Xây dựng full rebuild bất biến và phát hành ACL index shards."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import logging
-import sys
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
+try:
+    import faiss
+except ImportError:  # pragma: no cover - môi trường test nhẹ không cần ML runtime
+    faiss = None  # type: ignore[assignment]
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:  # pragma: no cover
+    SentenceTransformer = Any  # type: ignore[misc,assignment]
+
+from .catalog import CatalogEntry, active_catalog, catalog_snapshot, load_catalog
 from .config import IndexConfig
 from .ingestion import (
     Chunk,
@@ -39,244 +40,325 @@ LOGGER = logging.getLogger("rag_knowledge_assistant.index")
 
 @dataclass
 class DocumentRecord:
-    """Bản ghi đăng ký tài liệu theo chuẩn Enterprise Knowledge Registry."""
+    """Registry record lấy trực tiếp từ catalog, không lấy từ chunk đầu tiên."""
 
     document_id: str
+    policy_key: str
     source_path: str
     checksum: str
     document_version: str
-    parser_version: str = "structure-aware-v2"
-    security_scope: list[str] = field(default_factory=lambda: ["public", "employee"])
+    effective_from: str
+    effective_to: str | None
+    department: str
+    allowed_groups: list[str]
     status: str = "ACTIVE"
+    parser_version: str = "structure-aware-v3"
     ingested_at: str = ""
     chunk_count: int = 0
     chunk_ids: list[str] = field(default_factory=list)
+    # Alias để các consumer cũ vẫn đọc được ACL, nhưng giá trị duy nhất là catalog.
+    security_scope: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.ingested_at:
-            self.ingested_at = datetime.now(timezone.utc).isoformat()
+            self.ingested_at = datetime.now(UTC).isoformat()
+        if not self.security_scope:
+            self.security_scope = list(self.allowed_groups)
 
 
 def detect_corpus_changes(
-    data_dir: Path,
-    existing_registry: dict[str, Any],
-) -> dict[str, list[Path]]:
-    """Phân loại tài liệu thành 4 nhóm: NEW, CHANGED, UNCHANGED, DELETED."""
-    current_files = sorted([p for p in data_dir.rglob("*") if p.is_file()])
-    current_rel_paths = {p.relative_to(data_dir).as_posix(): p for p in current_files}
+    data_dir: Path, existing_registry: dict[str, Any]
+) -> dict[str, list[Path] | list[str]]:
+    """Phân loại thay đổi để audit; ``incremental`` không còn là vector update."""
+    current_files = sorted(
+        path
+        for path in data_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".txt", ".md", ".pdf", ".docx"}
+    )
+    current = {path.relative_to(data_dir).as_posix(): path for path in current_files}
+    registry_by_path: dict[str, dict[str, Any]] = {}
+    for key, value in existing_registry.items():
+        if not isinstance(value, dict):
+            continue
+        registry_by_path[str(value.get("source_path", key))] = value
 
     new_files: list[Path] = []
     changed_files: list[Path] = []
     unchanged_files: list[Path] = []
-    deleted_paths: list[str] = []
-
-    for rel_path, abs_path in current_rel_paths.items():
-        if rel_path not in existing_registry:
-            new_files.append(abs_path)
+    deleted: list[str] = []
+    for relative_path, absolute_path in current.items():
+        old = registry_by_path.get(relative_path)
+        if old is None:
+            new_files.append(absolute_path)
+        elif (
+            old.get("checksum") != compute_file_checksum(absolute_path)
+            or old.get("status") != "ACTIVE"
+        ):
+            changed_files.append(absolute_path)
         else:
-            old_record = existing_registry[rel_path]
-            current_checksum = compute_file_checksum(abs_path)
-            if old_record.get("checksum") != current_checksum or old_record.get("status") != "ACTIVE":
-                changed_files.append(abs_path)
-            else:
-                unchanged_files.append(abs_path)
-
-    for rel_path, old_record in existing_registry.items():
-        if rel_path not in current_rel_paths and old_record.get("status") == "ACTIVE":
-            deleted_paths.append(rel_path)
-
+            unchanged_files.append(absolute_path)
+    for relative_path, old in registry_by_path.items():
+        if relative_path not in current and old.get("status") == "ACTIVE":
+            deleted.append(relative_path)
     return {
         "new": new_files,
         "changed": changed_files,
         "unchanged": unchanged_files,
-        "deleted": deleted_paths,
+        "deleted": deleted,
     }
 
 
-def build_index(
-    config: IndexConfig | None = None,
-    incremental: bool = False,
-) -> dict[str, Any]:
-    """Xây dựng chỉ mục tri thức hoàn chỉnh, hỗ trợ chế độ Incremental Indexing.
+def _write_bundle(directory: Path, chunks: list[Chunk], vectors: np.ndarray) -> dict[str, Any]:
+    """Ghi một global bundle hoặc shard và kiểm tra count ngay sau khi ghi."""
+    if faiss is None:
+        raise RuntimeError("Cần cài faiss-cpu để xây dựng index.")
+    directory.mkdir(parents=True, exist_ok=True)
+    subset = np.asarray(vectors, dtype="float32")
+    index = faiss.IndexFlatIP(subset.shape[1])
+    index.add(subset)
+    faiss.write_index(index, str(directory / "index.faiss"))
+    save_json(directory / "chunks.json", [chunk.__dict__ for chunk in chunks])
+    bm25 = BM25Index.from_texts([chunk.text for chunk in chunks])
+    save_json(directory / "bm25_index.json", bm25.to_dict())
+    if index.ntotal != len(chunks) or len(bm25.tokenized_corpus) != len(chunks):
+        raise ValueError(f"Bundle {directory} có count không khớp sau khi ghi.")
+    return {"chunk_count": len(chunks), "vector_count": int(index.ntotal)}
 
-    Args:
-        config (Optional[IndexConfig]): Cấu hình Index.
-        incremental (bool): Kích hoạt chế độ cập nhật gia tăng (mặc định: False - rebuild đầy đủ).
 
-    Returns:
-        Dict[str, Any]: Báo cáo kết quả quá trình indexing.
-    """
+def _validate_release(directory: Path) -> None:
+    """Smoke validation cho global bundle và toàn bộ ACL shards."""
+    if faiss is None:
+        raise RuntimeError("Cần cài faiss-cpu để validate index.")
+    config = load_json(directory / "config.json")
+    global_chunks = load_json(directory / "chunks.json")
+    global_index = faiss.read_index(str(directory / "index.faiss"))
+    global_bm25 = load_json(directory / "bm25_index.json")
+    if global_index.ntotal != len(global_chunks):
+        raise ValueError("FAISS count != chunks count trong release.")
+    if int(global_bm25.get("corpus_size", -1)) != len(global_chunks):
+        raise ValueError("BM25 count != chunks count trong release.")
+    if config.get("chunk_count") != len(global_chunks):
+        raise ValueError("config.chunk_count != chunks count trong release.")
+    shard_root = directory / "shards"
+    for shard in shard_root.iterdir():
+        if not shard.is_dir():
+            continue
+        shard_chunks = load_json(shard / "chunks.json")
+        shard_index = faiss.read_index(str(shard / "index.faiss"))
+        shard_bm25 = load_json(shard / "bm25_index.json")
+        if shard_index.ntotal != len(shard_chunks):
+            raise ValueError(f"FAISS count != chunks count tại shard {shard.name}.")
+        if int(shard_bm25.get("corpus_size", -1)) != len(shard_chunks):
+            raise ValueError(f"BM25 count != chunks count tại shard {shard.name}.")
+
+
+def _make_version(chunks: list[Chunk], catalog: list[CatalogEntry]) -> str:
+    hasher = hashlib.sha256()
+    for item in catalog_snapshot(catalog):
+        hasher.update(str(item).encode("utf-8"))
+    for chunk in chunks:
+        hasher.update(chunk.chunk_id.encode("utf-8"))
+        hasher.update(chunk.content_hash.encode("utf-8"))
+    digest = hasher.hexdigest()[:8]
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    return f"rag-{stamp}-{digest}"
+
+
+def _activate_release(root: Path, release_path: Path, index_version: str) -> None:
+    """Đổi active pointer bằng replace nguyên tử sau khi release đã validate."""
+    pointer = {
+        "schema_version": 1,
+        "index_version": index_version,
+        "release_path": str(release_path.relative_to(root)).replace("\\", "/"),
+        "activated_at": datetime.now(UTC).isoformat(),
+    }
+    pointer_tmp = root / ".active_index.json.tmp"
+    save_json(pointer_tmp, pointer)
+    os.replace(pointer_tmp, root / "active_index.json")
+
+
+def build_index(config: IndexConfig | None = None, incremental: bool = False) -> dict[str, Any]:
+    """Build và validate một full release; chỉ sau đó mới đổi active pointer."""
     config = config or IndexConfig()
     config.validate()
     setup_logging()
-
     data_dir = Path(config.data_dir)
-    output_dir = Path(config.model_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(config.model_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "releases").mkdir(parents=True, exist_ok=True)
 
-    registry_path = output_dir / "document_registry.json"
-    chunks_path = output_dir / "chunks.json"
-    existing_registry: dict[str, Any] = {}
-    if registry_path.exists():
-        try:
-            existing_registry = load_json(registry_path)
-        except Exception:  # noqa: BLE001
-            existing_registry = {}
-
+    catalog = load_catalog(config.catalog_path, data_dir=data_dir)
+    build_date = date.today()
+    active_entries = active_catalog(catalog, as_of=build_date)
+    if not active_entries:
+        raise RuntimeError("Catalog không có tài liệu ACTIVE đang có hiệu lực.")
     LOGGER.info(
-        "Bắt đầu quy trình Indexing từ '%s' (strategy='%s', chunk_words=%d, incremental=%s)...",
-        config.data_dir,
-        config.strategy,
-        config.chunk_words,
+        "Build full release: %d active/%d catalog records; incremental=%s (change-aware full rebuild).",
+        len(active_entries),
+        len(catalog),
         incremental,
     )
 
-    # 1. Phát hiện thay đổi gia tăng nếu chạy ở chế độ incremental
-    if incremental and existing_registry and chunks_path.exists():
-        changes = detect_corpus_changes(data_dir, existing_registry)
-        LOGGER.info(
-            "Phát hiện Corpus Changes: %d new, %d changed, %d unchanged, %d deleted.",
-            len(changes["new"]),
-            len(changes["changed"]),
-            len(changes["unchanged"]),
-            len(changes["deleted"]),
-        )
-        if not changes["new"] and not changes["changed"] and not changes["deleted"]:
-            LOGGER.info("Toàn bộ tài liệu không thay đổi. Bỏ qua re-indexing để tiết kiệm tài nguyên.")
-            return {"status": "SKIPPED_NO_CHANGES", "total_chunks": len(load_json(chunks_path))}
-
-    # 2. Ingest toàn bộ chunks
     chunks = ingest_folder(
-        config.data_dir,
+        data_dir,
         chunk_words=config.chunk_words,
         overlap_words=config.overlap_words,
         strategy=config.strategy,
+        catalog=catalog,
+        as_of=build_date,
     )
-
     if not chunks:
-        raise RuntimeError(
-            f"Không tìm thấy tài liệu hợp lệ trong '{config.data_dir}'. "
-            "Hãy kiểm tra lại thư mục hoặc chạy 'python scripts/download_data.py'."
+        raise RuntimeError("Không có chunk hợp lệ sau Document Quality Gate.")
+    validate_chunk_quality_contract(chunks)
+
+    chunks_by_document: dict[str, list[Chunk]] = {}
+    for chunk in chunks:
+        chunks_by_document.setdefault(chunk.document_id, []).append(chunk)
+    for entry in active_entries:
+        if not chunks_by_document.get(entry.document_id):
+            raise ValueError(f"Tài liệu ACTIVE không tạo được chunk: {entry.document_id}.")
+
+    index_version = _make_version(chunks, catalog)
+    release_root = root / "releases"
+    temporary = Path(tempfile.mkdtemp(prefix=f".{index_version}-", dir=str(release_root)))
+    try:
+        if faiss is None:
+            raise RuntimeError("Cần cài faiss-cpu để xây dựng index.")
+        encoder = SentenceTransformer(config.embedding_model)
+        vectors = np.asarray(
+            encoder.encode(
+                [chunk.text for chunk in chunks], normalize_embeddings=True, show_progress_bar=False
+            ),
+            dtype="float32",
         )
+        if vectors.ndim != 2 or vectors.shape[0] != len(chunks):
+            raise ValueError("Embedding count không khớp với chunk count.")
 
-    # 3. Thực thi Chunk Quality Contract
-    quality_report = validate_chunk_quality_contract(chunks)
-    LOGGER.info("Chunk Quality Contract PASSED: %s", quality_report)
-    save_json(output_dir / "quality_report.json", quality_report)
+        manifest = create_document_manifest(chunks, data_dir)
+        timestamp = datetime.now(UTC).isoformat()
+        records: dict[str, dict[str, Any]] = {}
+        for entry in active_entries:
+            doc_chunks = chunks_by_document[entry.document_id]
+            source_path = data_dir / entry.file
+            record = DocumentRecord(
+                document_id=entry.document_id,
+                policy_key=entry.policy_key,
+                source_path=entry.file,
+                checksum=compute_file_checksum(source_path),
+                document_version=entry.version,
+                effective_from=entry.effective_from.isoformat(),
+                effective_to=entry.effective_to.isoformat() if entry.effective_to else None,
+                department=entry.department,
+                allowed_groups=list(entry.allowed_groups),
+                status=entry.status,
+                ingested_at=timestamp,
+                chunk_count=len(doc_chunks),
+                chunk_ids=[chunk.chunk_id for chunk in doc_chunks],
+            )
+            records[entry.document_id] = asdict(record)
 
-    # 4. Xây dựng Document Registry
-    manifest = create_document_manifest(chunks, config.data_dir)
-    document_registry: dict[str, Any] = {}
-    timestamp_now = datetime.now(timezone.utc).isoformat()
+        global_stats = _write_bundle(temporary, chunks, vectors)
+        shard_stats: dict[str, dict[str, Any]] = {}
+        shard_groups = sorted({group for entry in active_entries for group in entry.allowed_groups})
+        for group in shard_groups:
+            selected_indices = [
+                index for index, chunk in enumerate(chunks) if group in set(chunk.allowed_groups)
+            ]
+            if not selected_indices:
+                continue
+            shard_chunks = [chunks[index] for index in selected_indices]
+            shard_vectors = vectors[selected_indices]
+            shard_stats[group] = _write_bundle(
+                temporary / "shards" / group,
+                shard_chunks,
+                shard_vectors,
+            )
 
-    for doc_key, doc_info in manifest.get("documents", {}).items():
-        rec = DocumentRecord(
-            document_id=doc_info["document_id"],
-            source_path=doc_key,
-            checksum=doc_info["checksum"] or "",
-            document_version=timestamp_now[:10],
-            ingested_at=timestamp_now,
-            chunk_count=doc_info["chunk_count"],
-            chunk_ids=doc_info["chunk_ids"],
-            security_scope=getattr(chunks[0], "security_scope", ["public", "employee"]),
+        corpus_hash = hashlib.sha256(
+            "".join(chunk.content_hash for chunk in chunks).encode("utf-8")
+        ).hexdigest()[:16]
+        release_config = {
+            "schema_version": 3,
+            "model_version": "enterprise-rag-v1",
+            "index_version": index_version,
+            "embedding_model": config.embedding_model,
+            "reranker_model": config.reranker_model,
+            "vector_dimension": int(vectors.shape[1]),
+            "chunk_count": len(chunks),
+            "document_count": len(active_entries),
+            "active_as_of": build_date.isoformat(),
+            "chunk_words": config.chunk_words,
+            "overlap_words": config.overlap_words,
+            "strategy": config.strategy,
+            "corpus_hash": corpus_hash,
+            "candidate_pool_k": config.candidate_pool_k,
+            "dense_k": config.candidate_pool_k,
+            "sparse_k": config.candidate_pool_k,
+            "rrf_k": config.rrf_k,
+            "rerank_candidates": config.rerank_top_k,
+            "context_k": config.context_k,
+            "evidence_gate_threshold": config.evidence_gate_threshold,
+            "retrieval_policy_version": "retrieval-v1",
+            "generation_policy_version": "grounded-v1",
+            "acl_mode": "pre_retrieval_shards",
+            "rebuild_mode": "change-aware-full-rebuild",
+        }
+        save_json(temporary / "config.json", release_config)
+        save_json(temporary / "catalog_snapshot.json", catalog_snapshot(catalog))
+        save_json(temporary / "document_registry.json", records)
+        save_json(temporary / "document_manifest.json", manifest)
+        save_json(
+            temporary / "index_manifest.json",
+            {
+                "schema_version": 1,
+                "index_version": index_version,
+                "global": global_stats,
+                "shards": shard_stats,
+                "active_groups": shard_groups,
+                "catalog_records": len(catalog),
+            },
         )
-        document_registry[doc_key] = asdict(rec)
+        save_json(
+            temporary / "quality_report.json",
+            {"passed": True, "total_chunks": len(chunks), "active_documents": len(active_entries)},
+        )
+        _validate_release(temporary)
 
-    save_json(output_dir / "document_registry.json", document_registry)
-    save_json(output_dir / "document_manifest.json", manifest)
+        final_release = release_root / index_version
+        temporary.rename(final_release)
+        _activate_release(root, final_release, index_version)
+    except Exception:
+        # Chỉ xóa thư mục build tạm; active release cũ không bị đụng tới.
+        import shutil
 
-    # 5. Xây dựng Dense Embeddings & FAISS Index
-    LOGGER.info("Khởi tạo mô hình Embedding: %s", config.embedding_model)
-    encoder = SentenceTransformer(config.embedding_model)
-
-    texts = [c.text for c in chunks]
-    LOGGER.info("Vectorize %d chunks văn bản...", len(texts))
-
-    embeddings = encoder.encode(
-        texts,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
-    vectors = np.asarray(embeddings, dtype="float32")
-    vector_dimension = vectors.shape[1]
-
-    index = faiss.IndexFlatIP(vector_dimension)
-    index.add(vectors)
-
-    faiss_path = output_dir / "index.faiss"
-    faiss.write_index(index, str(faiss_path))
-    LOGGER.info("Đã ghi FAISS index (%d vectors) tại %s", index.ntotal, faiss_path.name)
-
-    # 6. Xây dựng BM25 Lexical Index
-    LOGGER.info("Xây dựng BM25Okapi Lexical Index cho %d chunks...", len(texts))
-    bm25_index = BM25Index.from_texts(texts)
-    save_json(output_dir / "bm25_index.json", bm25_index.to_dict())
-
-    # 7. Lưu Chunks Metadata
-    chunks_dict_list = [c.__dict__ for c in chunks]
-    save_json(chunks_path, chunks_dict_list)
-
-    # 8. Tính toán Corpus Hash & Index Versioning
-    corpus_hasher = hashlib.sha256()
-    for text in texts:
-        corpus_hasher.update(text.encode("utf-8"))
-    corpus_hash = corpus_hasher.hexdigest()[:16]
-
-    timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    index_version = f"{timestamp_str}-{corpus_hash[:6]}"
-
-    config_metadata = {
-        "schema_version": 2,
-        "model_version": "rag-evidence-v2",
-        "index_version": index_version,
-        "embedding_model": config.embedding_model,
-        "reranker_model": config.reranker_model,
-        "vector_dimension": vector_dimension,
-        "chunk_count": len(chunks),
-        "document_count": manifest["total_documents"],
-        "chunk_words": config.chunk_words,
-        "overlap_words": config.overlap_words,
-        "strategy": config.strategy,
-        "corpus_hash": corpus_hash,
-        "candidate_pool_k": config.candidate_pool_k,
-        "rrf_k": config.rrf_k,
-        "rerank_top_k": config.rerank_top_k,
-        "evidence_gate_threshold": config.evidence_gate_threshold,
-        "data_dir": str(config.data_dir),
-    }
-    save_json(output_dir / "config.json", config_metadata)
-
-    LOGGER.info(
-        "Chỉ mục hoàn tất! Version: %s, Tài liệu: %d, Chunks: %d",
-        index_version,
-        manifest["total_documents"],
-        len(chunks),
-    )
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
 
     return {
         "status": "SUCCESS",
         "index_version": index_version,
-        "document_count": manifest["total_documents"],
+        "release_path": str(final_release),
+        "document_count": len(active_entries),
         "chunk_count": len(chunks),
-        "quality_report": quality_report,
+        "shards": shard_stats,
+        "mode": "change-aware-full-rebuild",
     }
 
 
 def main() -> None:
-    """CLI Entrypoint hỗ trợ cả build toàn diện và incremental."""
-    parser = argparse.ArgumentParser(description="Build RAG Knowledge Index Artifacts")
+    """CLI build index; không mutate ``IndexConfig(frozen=True)``."""
+    parser = argparse.ArgumentParser(description="Build immutable Enterprise RAG index release")
     parser.add_argument("--data-dir", type=str, default=None, help="Thư mục tài liệu gốc")
-    parser.add_argument("--model-dir", type=str, default=None, help="Thư mục lưu trữ artifact")
-    parser.add_argument("--incremental", action="store_true", help="Chế độ cập nhật gia tăng")
+    parser.add_argument("--model-dir", type=str, default=None, help="Thư mục gốc lưu release")
+    parser.add_argument("--catalog-path", type=str, default=None, help="Knowledge catalog YAML")
+    parser.add_argument("--incremental", action="store_true", help="Alias audit; vẫn full rebuild")
     args = parser.parse_args()
-
-    cfg = IndexConfig()
-    if args.data_dir:
-        cfg.data_dir = Path(args.data_dir)
-    if args.model_dir:
-        cfg.model_dir = Path(args.model_dir)
-
-    build_index(cfg, incremental=args.incremental)
+    config = IndexConfig(
+        data_dir=args.data_dir or "data/raw",
+        model_dir=args.model_dir or "models/rag_index",
+        catalog_path=args.catalog_path or "configs/knowledge_catalog.yaml",
+    )
+    build_index(config, incremental=args.incremental)
 
 
 if __name__ == "__main__":

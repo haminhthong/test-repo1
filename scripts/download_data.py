@@ -81,7 +81,6 @@ SAMPLES: dict[str, str] = {
         "Buổi đánh giá thử việc (Probation Review) được tổ chức vào ngày làm việc thứ 25 của kỳ thử việc.\n"
         "Kết quả đánh giá Đạt sẽ kích hoạt ký hợp đồng lao động chính thức thời hạn 1 năm."
     ),
-
     # --------------------------------------------------------------------------
     # KHỐI TÀI CHÍNH & KẾ TOÁN (FINANCE & EXPENSE POLICIES)
     # --------------------------------------------------------------------------
@@ -137,7 +136,6 @@ SAMPLES: dict[str, str] = {
         "2. Định dạng hóa đơn hợp lệ:\n"
         "Kế toán chỉ chấp nhận file định dạng hóa đơn điện tử gốc kèm file XML nén tra cứu hợp lệ từ Tổng cục Thuế."
     ),
-
     # --------------------------------------------------------------------------
     # KHỐI BẢO MẬT & CNTT (SECURITY & IT POLICIES)
     # --------------------------------------------------------------------------

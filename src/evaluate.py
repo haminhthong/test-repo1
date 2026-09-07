@@ -17,11 +17,14 @@ import math
 import statistics
 import time
 from dataclasses import dataclass, field
+from math import nextafter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .generation import ABSTAIN_PHRASE, validate_citation_references
+from .config import DEFAULT_EVIDENCE_GATE_THRESHOLD
+from .generation import validate_citation_references
 from .ranking import tokenize
+from .security import AccessContext
 from .utils import save_json, setup_logging
 
 if TYPE_CHECKING:
@@ -30,6 +33,11 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("rag_knowledge_assistant.evaluate")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BENCHMARK_PATH = PROJECT_ROOT / "data/evaluation/questions.json"
+BENCHMARK_ACCESS = AccessContext(
+    user_id="offline-evaluator",
+    groups=("employee", "hr", "finance", "security"),
+    auth_method="offline-benchmark",
+)
 
 
 @dataclass(frozen=True)
@@ -87,7 +95,7 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
 
         cases.append(
             BenchmarkCase(
-                id=str(item.get("id", f"Q{index+1:02d}")),
+                id=str(item.get("id", f"Q{index + 1:02d}")),
                 question=question,
                 expected_sources=sources,
                 split=split,
@@ -139,9 +147,7 @@ def calculate_retrieval_metrics(
         or len(ranked_sources) != len(expected_sources)
         or len(latencies) != len(ranked_sources)
     ):
-        raise ValueError(
-            "Kết quả, ground truth và latency phải cùng số mẫu, không rỗng."
-        )
+        raise ValueError("Kết quả, ground truth và latency phải cùng số mẫu, không rỗng.")
 
     reciprocal_ranks: list[float] = []
     ndcg_list: list[float] = []
@@ -198,9 +204,7 @@ def calculate_retrieval_metrics(
     p50_index = len(latency_ms) // 2
 
     return {
-        "recall_at_k": round(
-            sum(value > 0 for value in reciprocal_ranks) / total_valid, 4
-        ),
+        "recall_at_k": round(sum(value > 0 for value in reciprocal_ranks) / total_valid, 4),
         "hit_rate_at_1": round(hits_at_one / total_valid, 4),
         "mrr": round(statistics.fmean(reciprocal_ranks), 4),
         "ndcg_at_k": round(statistics.fmean(ndcg_list), 4),
@@ -280,6 +284,39 @@ def evaluate_evidence_retrieval(
     }
 
 
+def evaluate_citation_metrics(
+    answers: list[str], retrieved_hits: list[list[dict[str, Any]]], max_chunks: int = 4
+) -> dict[str, float]:
+    """Tách citation reference validity khỏi factual-sentence coverage.
+
+    Hàm này chỉ đo contract runtime; semantic support vẫn cần human/judge
+    đánh giá offline riêng.
+    """
+    if len(answers) != len(retrieved_hits):
+        raise ValueError("answers và retrieved_hits phải cùng số mẫu.")
+    if not answers:
+        return {
+            "citation_reference_validity": 1.0,
+            "factual_sentence_citation_coverage": 1.0,
+        }
+    validations = [
+        validate_citation_references(answer, hits, max_chunks=max_chunks)[2]
+        for answer, hits in zip(answers, retrieved_hits, strict=True)
+    ]
+    return {
+        "citation_reference_validity": round(
+            statistics.fmean(float(item["citation_reference_validity"]) for item in validations),
+            4,
+        ),
+        "factual_sentence_citation_coverage": round(
+            statistics.fmean(
+                float(item["factual_sentence_citation_coverage"]) for item in validations
+            ),
+            4,
+        ),
+    }
+
+
 def evaluate_retrieval_comprehensive(
     retriever: Retriever,
     cases: list[BenchmarkCase],
@@ -287,6 +324,7 @@ def evaluate_retrieval_comprehensive(
     top_k: int = 4,
     use_reranker: bool = True,
     dense_weight: float | None = None,
+    access_context: AccessContext = BENCHMARK_ACCESS,
 ) -> dict[str, Any]:
     """Đánh giá toàn diện Retrieval chất lượng đa tầng theo từng category slice."""
     ranked_sources: list[list[str]] = []
@@ -312,6 +350,8 @@ def evaluate_retrieval_comprehensive(
             k=top_k,
             dense_weight=dense_weight,
             use_reranker=use_reranker,
+            access_context=access_context,
+            min_score=0.0,
         )
         elapsed = time.perf_counter() - started
         latencies.append(elapsed)
@@ -354,14 +394,12 @@ def evaluate_retrieval_comprehensive(
                 keyword_overlaps.append(overlap)
 
     # Tính toán chỉ số tổng thể trên các câu hỏi có thể trả lời
-    answerable_ranked = [
-        r for r, c in zip(ranked_sources, cases, strict=True) if c.is_answerable
-    ]
+    answerable_ranked = [r for r, c in zip(ranked_sources, cases, strict=True) if c.is_answerable]
     answerable_expected = [
         e for e, c in zip(expected_sources, cases, strict=True) if c.is_answerable
     ]
     answerable_latencies = [
-        l for l, c in zip(latencies, cases, strict=True) if c.is_answerable
+        latency for latency, case in zip(latencies, cases, strict=True) if case.is_answerable
     ]
 
     base_metrics = calculate_retrieval_metrics(
@@ -379,7 +417,9 @@ def evaluate_retrieval_comprehensive(
             e for e, c in zip(category_expected[cat], cat_cases, strict=True) if c.is_answerable
         ]
         cat_ans_latencies = [
-            l for l, c in zip(category_latencies[cat], cat_cases, strict=True) if c.is_answerable
+            latency
+            for latency, case in zip(category_latencies[cat], cat_cases, strict=True)
+            if case.is_answerable
         ]
 
         if cat_ans_ranked:
@@ -398,9 +438,7 @@ def evaluate_retrieval_comprehensive(
     false_answer_rate = (
         round(false_answers / total_unanswerable, 4) if total_unanswerable > 0 else 0.0
     )
-    avg_keyword_coverage = (
-        round(statistics.fmean(keyword_overlaps), 4) if keyword_overlaps else 0.0
-    )
+    avg_keyword_coverage = round(statistics.fmean(keyword_overlaps), 4) if keyword_overlaps else 0.0
 
     return {
         **base_metrics,
@@ -436,33 +474,62 @@ def tune_evidence_gate_threshold(
     Returns:
         float: Ngưỡng điểm evidence_score được chọn.
     """
-    assert all(c.split == "dev" for c in dev_cases), "LỖI NGUY HIỂM: Chỉ được tune threshold trên tập DEV!"
+    if not 0.0 <= target_false_answer_rate <= 1.0:
+        raise ValueError("target_false_answer_rate phải nằm trong khoảng [0.0, 1.0].")
+    if top_k <= 0:
+        raise ValueError("top_k phải lớn hơn 0.")
+    assert all(c.split == "dev" for c in dev_cases), (
+        "LỖI NGUY HIỂM: Chỉ được tune threshold trên tập DEV!"
+    )
 
     unans_cases = [c for c in dev_cases if not c.is_answerable]
     ans_cases = [c for c in dev_cases if c.is_answerable]
 
     if not unans_cases or not ans_cases:
-        return 0.25
+        return float(getattr(retriever, "evidence_gate_threshold", DEFAULT_EVIDENCE_GATE_THRESHOLD))
 
     # Thu thập điểm số evidence cao nhất cho mỗi case
     unans_scores: list[float] = []
     for c in unans_cases:
-        hits = retriever.search(c.question, k=top_k, use_reranker=use_reranker, min_score=0.0)
-        top_sc = max((h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0)
+        hits = retriever.search(
+            c.question,
+            k=top_k,
+            use_reranker=use_reranker,
+            min_score=float("-inf"),
+            access_context=BENCHMARK_ACCESS,
+        )
+        top_sc = max(
+            (h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0
+        )
         unans_scores.append(top_sc)
 
     ans_scores: list[float] = []
     for c in ans_cases:
-        hits = retriever.search(c.question, k=top_k, use_reranker=use_reranker, min_score=0.0)
-        top_sc = max((h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0)
+        hits = retriever.search(
+            c.question,
+            k=top_k,
+            use_reranker=use_reranker,
+            min_score=float("-inf"),
+            access_context=BENCHMARK_ACCESS,
+        )
+        top_sc = max(
+            (h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0
+        )
         ans_scores.append(top_sc)
 
-    best_threshold = 0.25
+    best_threshold = float(
+        getattr(retriever, "evidence_gate_threshold", DEFAULT_EVIDENCE_GATE_THRESHOLD)
+    )
     best_ans_recall = -1.0
-    min_false_rate = 1.0
+    min_false_rate = float("inf")
+    feasible_found = False
 
-    # Quét ngưỡng từ 0.10 đến 0.85 với bước 0.02
-    thresholds = [round(0.10 + i * 0.02, 2) for i in range(38)]
+    # Chỉ thử tại các score quan sát được và ngay phía trên score đó. Cách này
+    # giữ đúng thang raw logit, không ép score về khoảng xác suất [0, 1].
+    observed_scores = sorted(set(unans_scores + ans_scores + [best_threshold]))
+    thresholds = sorted(
+        set(observed_scores) | {nextafter(score, float("inf")) for score in observed_scores}
+    )
     for tau in thresholds:
         false_ans_cnt = sum(sc >= tau for sc in unans_scores)
         far = false_ans_cnt / len(unans_scores)
@@ -471,14 +538,22 @@ def tune_evidence_gate_threshold(
         ans_recall = true_ans_cnt / len(ans_scores)
 
         if far <= target_false_answer_rate:
-            if ans_recall > best_ans_recall:
+            if (
+                not feasible_found
+                or ans_recall > best_ans_recall
+                or (ans_recall == best_ans_recall and far < min_false_rate)
+            ):
+                feasible_found = True
                 best_ans_recall = ans_recall
                 best_threshold = tau
                 min_false_rate = far
-        elif best_ans_recall < 0 and far < min_false_rate:
-            # Fallback nếu không ngưỡng nào đạt target: chọn ngưỡng có far thấp nhất
+        elif not feasible_found and far < min_false_rate:
+            # Nếu không có ngưỡng đạt target, chọn ngưỡng có FAR thấp nhất.
             best_threshold = tau
             min_false_rate = far
+
+    if best_ans_recall < 0:
+        best_ans_recall = sum(score >= best_threshold for score in ans_scores) / len(ans_scores)
 
     LOGGER.info(
         "Dev Gate Tuning hoàn tất: chọn threshold=%.2f (Dev Answerable Recall=%.2f%%, FAR=%.2f%%)",
@@ -509,6 +584,8 @@ def evaluate_configuration(
             k=top_k,
             dense_weight=dense_weight,
             use_reranker=False,
+            access_context=BENCHMARK_ACCESS,
+            min_score=0.0,
         )
         latencies.append(time.perf_counter() - started)
         ranked_sources.append([str(item.get("source", "")) for item in results])
@@ -523,109 +600,79 @@ def run_evaluation(
     output_report_path: str | Path | None = None,
     top_k: int = 4,
 ) -> dict[str, Any]:
-    """Thực hiện đánh giá toàn diện các pipeline trên tập Dev và Test."""
+    """Tune/so sánh trên Dev, sau đó chạy canonical đúng một lần trên Test."""
     setup_logging()
     from .retrieval import Retriever
 
     cases = load_benchmark(benchmark_path)
     dev_cases = [case for case in cases if case.split == "dev"]
     test_cases = [case for case in cases if case.split == "test"]
-
     if not dev_cases or not test_cases:
         raise ValueError("Benchmark phải có cả split dev và test.")
 
     retriever = Retriever(model_dir=model_dir, use_reranker=True)
-
-    LOGGER.info(
-        "Bắt đầu đánh giá Benchmark: %d dev queries, %d test queries...",
-        len(dev_cases),
-        len(test_cases),
-    )
-
-    # 1. Đánh giá Dev Tuning & Threshold Sweep
     calibrated_threshold = tune_evidence_gate_threshold(
         dev_cases, retriever, target_false_answer_rate=0.05, top_k=top_k
     )
     retriever.evidence_gate_threshold = calibrated_threshold
 
-    candidate_weights = (0.5, 0.7, 0.85)
-    dev_results = {
-        str(weight): evaluate_configuration(
-            retriever, dev_cases, dense_weight=weight, top_k=top_k
-        )
-        for weight in candidate_weights
-    }
-    best_weight = max(
-        candidate_weights,
-        key=lambda val: (
-            dev_results[str(val)]["mrr"],
-            dev_results[str(val)]["hit_rate_at_1"],
+    dev_pipelines = {
+        "bm25_only": evaluate_retrieval_comprehensive(
+            retriever, dev_cases, top_k=top_k, dense_weight=0.0, use_reranker=False
         ),
+        "dense_only": evaluate_retrieval_comprehensive(
+            retriever, dev_cases, top_k=top_k, dense_weight=1.0, use_reranker=False
+        ),
+        "hybrid_rrf": evaluate_retrieval_comprehensive(
+            retriever, dev_cases, top_k=top_k, use_reranker=False
+        ),
+        "hybrid_rrf_multilingual_reranker": evaluate_retrieval_comprehensive(
+            retriever, dev_cases, top_k=top_k, use_reranker=True
+        ),
+    }
+    final_metrics = evaluate_retrieval_comprehensive(
+        retriever, test_cases, top_k=top_k, use_reranker=True
     )
-
-    # 2. Đánh giá So sánh Baseline trên Test Set (Chỉ đánh giá 1 lần, không tune trên test)
-    test_baselines: dict[str, Any] = {
-        "lexical_only_bm25": evaluate_retrieval_comprehensive(
-            retriever, test_cases, top_k=top_k, dense_weight=0.0, use_reranker=False
-        ),
-        "dense_only_faiss": evaluate_retrieval_comprehensive(
-            retriever, test_cases, top_k=top_k, dense_weight=1.0, use_reranker=False
-        ),
-        "hybrid_linear_fusion": evaluate_retrieval_comprehensive(
-            retriever, test_cases, top_k=top_k, dense_weight=best_weight, use_reranker=False
-        ),
-        "canonical_hybrid_rrf_reranker": evaluate_retrieval_comprehensive(
-            retriever, test_cases, top_k=top_k, dense_weight=None, use_reranker=True
-        ),
+    policy = {
+        "version": "retrieval-v1",
+        "dense_k": int(retriever.config.get("dense_k", retriever.default_candidate_k)),
+        "sparse_k": int(retriever.config.get("sparse_k", retriever.default_candidate_k)),
+        "rrf_k": retriever.rrf_k,
+        "rerank_candidates": retriever.rerank_top_k,
+        "context_k": top_k,
+        "reranker_model": retriever.config.get("reranker_model"),
+        "generation_policy": "grounded-v1",
+        "evidence_gate_threshold": calibrated_threshold,
+        "evaluation_dataset": Path(benchmark_path).as_posix(),
     }
-
-    report: dict[str, Any] = {
-        "schema_version": 2,
-        "system_name": "Evidence-Grounded Enterprise Knowledge Retrieval & Answering System",
+    dev_report = {
+        "schema_version": 3,
         "selection_split": "dev",
-        "evaluation_split": "test",
-        "top_k": top_k,
-        "calibrated_evidence_gate_threshold": calibrated_threshold,
+        "evaluation_split": "locked_test",
+        "retrieval_policy": policy,
+        "pipelines": dev_pipelines,
+    }
+    final_report = {
+        "schema_version": 3,
+        "system_name": "Vietnamese Enterprise Policy RAG",
+        "selection_split": "dev",
+        "evaluation_split": "locked_test",
+        "locked_test_tuned": False,
         "total_test_cases": len(test_cases),
-        "selected_dense_weight": best_weight,
-        "dev_tuning": dev_results,
-        "test_baseline_comparison": test_baselines,
-        "summary": {
-            "canonical_recall_at_k": test_baselines["canonical_hybrid_rrf_reranker"]["recall_at_k"],
-            "canonical_mrr": test_baselines["canonical_hybrid_rrf_reranker"]["mrr"],
-            "canonical_ndcg_at_k": test_baselines["canonical_hybrid_rrf_reranker"]["ndcg_at_k"],
-            "canonical_hit_rate_at_1": test_baselines["canonical_hybrid_rrf_reranker"]["hit_rate_at_1"],
-            "true_abstain_rate": test_baselines["canonical_hybrid_rrf_reranker"]["true_abstain_rate"],
-            "false_answer_rate": test_baselines["canonical_hybrid_rrf_reranker"]["false_answer_rate"],
-            "avg_latency_ms": test_baselines["canonical_hybrid_rrf_reranker"]["avg_latency_ms"],
-            "p95_latency_ms": test_baselines["canonical_hybrid_rrf_reranker"]["p95_latency_ms"],
-        },
+        "retrieval_policy": policy,
+        "canonical_pipeline": "Dense + BM25 + RRF + Multilingual Reranker + Evidence Gate",
+        "metrics": final_metrics,
         "limitations": [
-            "Corpus thử nghiệm gồm các chính sách nội bộ tiêu chuẩn; cần kiểm tra thêm khi nạp văn bản hàng trăm trang.",
-            "Cross-Encoder reranking bổ sung độ trễ tính toán (~15-40ms trên CPU); có thể tắt với tham số use_reranker=False khi cần throughput cao.",
-            "Ngưỡng Evidence Gate được calibrate tự động trên tập Dev.",
+            "Benchmark được đọc từ file đã chọn; cần freeze dữ liệu trước khi so sánh release.",
+            "Runtime citation guard kiểm tra citation ID và sentence coverage, không tự chứng minh entailment.",
+            "PDF scan/OCR và bảng PDF phức tạp chưa thuộc phạm vi V1.",
         ],
     }
-
-    report_path = Path(output_report_path or PROJECT_ROOT / "reports/test_metrics.json")
-    save_json(report_path, report)
-    LOGGER.info("Đã lưu benchmark kết quả đánh giá tại: %s", report_path.resolve())
-
-    # In bảng tóm tắt kết quả đẹp mắt ra màn hình
-    print("\n" + "=" * 85)
-    print(" BÁO CÁO KẾT QUẢ ĐÁNH GIÁ CANONICAL HYBRID RAG (TEST SET)")
-    print("=" * 85)
-    print(f"{'Pipeline':<32} | {'Recall@K':<10} | {'MRR':<8} | {'nDCG':<8} | {'P95 Latency':<12}")
-    print("-" * 85)
-    for name, met in test_baselines.items():
-        rec = met.get("recall_at_k", 0.0)
-        mrr = met.get("mrr", 0.0)
-        ndcg = met.get("ndcg_at_k", 0.0)
-        p95 = met.get("p95_latency_ms", 0.0)
-        print(f"{name:<32} | {rec:<10.4f} | {mrr:<8.4f} | {ndcg:<8.4f} | {p95:<10.2f} ms")
-    print("=" * 85 + "\n")
-
-    return report
+    save_json(PROJECT_ROOT / "reports/dev_metrics.json", dev_report)
+    save_json(PROJECT_ROOT / "reports/final_test_metrics.json", final_report)
+    if output_report_path:
+        save_json(output_report_path, final_report)
+    return {"dev": dev_report, "final": final_report}
 
 
 if __name__ == "__main__":

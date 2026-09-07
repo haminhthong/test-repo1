@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enterprise-rag-assistant"
+version = "1.0.0"
+description = "Vietnamese version-aware, ACL-aware evidence-grounded policy RAG"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "RUF"]
+ignore = ["E501", "RUF100"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["E402"]

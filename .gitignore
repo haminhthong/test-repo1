@@ -7,9 +7,6 @@ mlruns/
 data/raw/*
 data/processed/*
 models/*
+indexes/*
 reports/*.json
 reports/*.csv
-!data/raw/.gitkeep
-!data/processed/.gitkeep
-!models/.gitkeep
-!reports/.gitkeep

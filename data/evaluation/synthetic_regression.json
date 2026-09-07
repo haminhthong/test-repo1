@@ -1,0 +1,41 @@
+[
+  {
+    "id": "SYN-001",
+    "question": "Nhân viên chính thức có bao nhiêu ngày phép năm?",
+    "expected_sources": ["policy_leave.txt", "annual_leave_policy_2026.txt"],
+    "expected_documents": ["policy_leave.txt", "annual_leave_policy_2026.txt"],
+    "expected_evidence": [{"document": "annual_leave_policy_2026.txt", "text_contains": "12 ngày"}],
+    "reference_answer": "12 ngày phép năm",
+    "category": "numeric",
+    "split": "dev",
+    "is_answerable": true
+  },
+  {
+    "id": "SYN-002",
+    "question": "Quy định thưởng Tết năm 2027 là bao nhiêu?",
+    "expected_sources": ["ABSTAIN"],
+    "expected_documents": [],
+    "category": "no_answer",
+    "split": "dev",
+    "is_answerable": false
+  },
+  {
+    "id": "SYN-003",
+    "question": "Mã số thuế dùng để xuất hóa đơn là gì?",
+    "expected_sources": ["vat_invoice_guide.txt"],
+    "expected_documents": ["vat_invoice_guide.txt"],
+    "expected_evidence": [{"document": "vat_invoice_guide.txt", "text_contains": "0101234567"}],
+    "category": "keyword_code",
+    "split": "test",
+    "is_answerable": true
+  },
+  {
+    "id": "SYN-004",
+    "question": "Nhân viên phải dùng phương thức nào để xác thực tài khoản?",
+    "expected_sources": ["account_security.txt"],
+    "expected_documents": ["account_security.txt"],
+    "category": "security",
+    "split": "test",
+    "is_answerable": true
+  }
+]

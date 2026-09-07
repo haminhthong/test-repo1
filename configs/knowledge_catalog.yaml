@@ -1,0 +1,164 @@
+# Catalog là nguồn sự thật duy nhất cho version và quyền truy cập.
+documents:
+  - document_id: hr-leave-policy
+    policy_key: leave-procedure-policy
+    file: policy_leave.txt
+    department: hr
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, hr]
+  - document_id: hr-annual-leave-2025
+    policy_key: annual-leave-policy
+    file: annual_leave_policy_2025.txt
+    department: hr
+    version: "2025.1"
+    effective_from: "2025-01-01"
+    effective_to: "2025-12-31"
+    status: ARCHIVED
+    allowed_groups: [employee, hr]
+  - document_id: hr-annual-leave-2026
+    policy_key: annual-leave-policy
+    file: annual_leave_policy_2026.txt
+    department: hr
+    version: "2026.2"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, hr]
+  - document_id: hr-sick-leave
+    policy_key: sick-leave-policy
+    file: sick_leave_policy.txt
+    department: hr
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, hr]
+  - document_id: hr-remote-work
+    policy_key: remote-work-policy
+    file: remote_work_policy.txt
+    department: hr
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, hr]
+  - document_id: hr-onboarding
+    policy_key: onboarding-policy
+    file: onboarding_policy.txt
+    department: hr
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, hr]
+  - document_id: finance-expense
+    policy_key: expense-policy
+    file: expense_policy.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: finance-travel-expense
+    policy_key: travel-expense-policy
+    file: travel_expense_policy.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: finance-reimbursement
+    policy_key: reimbursement-policy
+    file: reimbursement_policy.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: finance-procurement
+    policy_key: procurement-policy
+    file: procurement_policy.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: finance-corporate-card
+    policy_key: corporate-card-policy
+    file: corporate_card_policy.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: finance-vat-invoice
+    policy_key: vat-invoice-guide
+    file: vat_invoice_guide.txt
+    department: finance
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [employee, finance]
+  - document_id: security-account
+    policy_key: account-security-policy
+    file: account_security.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]
+  - document_id: security-data-classification
+    policy_key: data-classification-policy
+    file: data_classification.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]
+  - document_id: security-device
+    policy_key: device-security-policy
+    file: device_security.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]
+  - document_id: security-incident
+    policy_key: incident-response-policy
+    file: incident_response.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]
+  - document_id: security-password
+    policy_key: password-policy
+    file: password_policy.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]
+  - document_id: security-guide
+    policy_key: security-guide
+    file: security_guide.txt
+    department: security
+    version: "2026.1"
+    effective_from: "2026-01-01"
+    effective_to: null
+    status: ACTIVE
+    allowed_groups: [security]

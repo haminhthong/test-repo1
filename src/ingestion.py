@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -54,15 +54,12 @@ def generate_document_id(relative_path: Path | str) -> str:
     return hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:12]
 
 
-from dataclasses import dataclass, field
-
-
 @dataclass
 class Chunk:
     """Cấu trúc dữ liệu đại diện cho một đoạn văn bản (Chunk) sau khi phân tách.
 
     Attributes:
-        chunk_id (str): Mã định danh ổn định không xung đột: {document_id}:p{page}:c{index}.
+        chunk_id (str): Mã định danh: {document_id}:{version}:{section_hash}:c{index}.
         text (str): Nội dung văn bản của chunk.
         source (str): Tên tệp tài liệu gốc.
         page (Optional[int]): Số trang tương ứng (có với PDF kỹ thuật số, None với DOCX/TXT/MD).
@@ -73,7 +70,12 @@ class Chunk:
         section (Optional[str]): Tiêu đề phần/chương/mục chứa chunk.
         chunk_index (int): Chỉ số thứ tự của chunk trong tài liệu (0-indexed).
         content_hash (str): Mã băm SHA-256 của nội dung chunk.
-        security_scope (List[str]): Danh sách nhóm người dùng được phép truy cập chunk này (ACL).
+        policy_key (str): Khóa chính sách ổn định giữa các version.
+        document_version (str): Version lấy nguyên từ knowledge catalog.
+        policy_status (str): Trạng thái version tại thời điểm build.
+        department (str): Phòng ban sở hữu tài liệu.
+        allowed_groups (List[str]): ACL lấy nguyên từ catalog.
+        security_scope (List[str]): Alias tương thích ngược của allowed_groups.
     """
 
     chunk_id: str
@@ -87,7 +89,12 @@ class Chunk:
     section: str | None = None
     chunk_index: int = 0
     content_hash: str = ""
-    security_scope: list[str] = field(default_factory=lambda: ["public"])
+    policy_key: str = ""
+    document_version: str = ""
+    policy_status: str = "active"
+    department: str = ""
+    allowed_groups: list[str] = field(default_factory=list)
+    security_scope: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Tự động tính toán các trường metadata nếu chưa được cung cấp."""
@@ -99,16 +106,47 @@ class Chunk:
             self.source_path = self.source
         if not self.document_id and self.source_path:
             self.document_id = generate_document_id(self.source_path)
-        if not self.security_scope or self.security_scope == ["public"]:
-            scopes = ["public", "employee"]
-            lowered = (self.source_path or self.source).lower()
-            if "hr" in lowered or "leave" in lowered:
-                scopes.append("hr")
-            if "finance" in lowered or "expense" in lowered or "reimbursement" in lowered or "procurement" in lowered:
-                scopes.append("finance")
-            if "security" in lowered or "password" in lowered or "incident" in lowered:
-                scopes.append("security")
-            self.security_scope = scopes
+        # ACL chỉ được nhận từ catalog. Không có metadata ACL thì deny-by-default.
+        if not self.allowed_groups and self.security_scope:
+            self.allowed_groups = list(dict.fromkeys(self.security_scope))
+        if not self.security_scope and self.allowed_groups:
+            self.security_scope = list(dict.fromkeys(self.allowed_groups))
+        self.allowed_groups = [
+            group.strip().lower() for group in self.allowed_groups if group.strip()
+        ]
+        self.security_scope = [
+            group.strip().lower() for group in self.security_scope if group.strip()
+        ]
+
+
+@dataclass(frozen=True)
+class DocumentBlock:
+    """Khối nguyên tử từ parser, có thể là heading, paragraph hoặc table row."""
+
+    text: str
+    page: int | None = None
+    block_type: str = "paragraph"
+    heading_level: int | None = None
+
+
+def _section_hash(section: str) -> str:
+    """Tạo mã section ổn định, không phụ thuộc số trang của DOCX."""
+    normalized = " ".join(section.casefold().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:6]
+
+
+def _chunk_id(
+    document_id: str,
+    document_version: str,
+    section: str,
+    page: int | None,
+    index: int,
+) -> str:
+    if document_version:
+        return f"{document_id}:{document_version}:{_section_hash(section)}:c{index:03d}"
+    # Giữ format cũ cho caller prototype chưa có catalog.
+    page_str = str(page) if page is not None else "0"
+    return f"{document_id}:p{page_str}:c{index:03d}"
 
 
 def check_document_quality(path: Path, raw_pages: list[tuple[str, int | None]]) -> tuple[bool, str]:
@@ -143,7 +181,6 @@ def validate_chunk_quality_contract(chunks: list[Chunk]) -> dict[str, Any]:
     if not report["passed"]:
         raise ValueError(f"Chunk Quality Contract vi phạm tiêu chuẩn: {report}")
     return report
-
 
 
 def read_text(path: Path) -> list[tuple[str, int | None]]:
@@ -190,12 +227,84 @@ def read_text(path: Path) -> list[tuple[str, int | None]]:
             return []
 
     if suffix == ".docx":
+        blocks = read_document_blocks(path)
+        text = "\n".join(block.text for block in blocks if block.text.strip())
+        return [(text, None)] if text else []
+
+    raise ValueError(
+        f"Định dạng tệp không được hỗ trợ: '{suffix}' (Chỉ hỗ trợ .txt, .md, .pdf, .docx)"
+    )
+
+
+def read_document_blocks(path: Path) -> list[DocumentBlock]:
+    """Đọc tài liệu thành paragraph/heading/table row có cấu trúc.
+
+    PDF/TXT/Markdown vẫn trả về block văn bản đơn giản. DOCX được duyệt theo
+    thứ tự XML của body để không làm mất bảng hoặc metadata heading.
+    """
+    suffix = path.suffix.lower()
+    if suffix in {".txt", ".md"}:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        return [DocumentBlock(text=text)] if text.strip() else []
+
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+
+            return [
+                DocumentBlock(text=page.extract_text() or "", page=index + 1)
+                for index, page in enumerate(PdfReader(str(path)).pages)
+            ]
+        except ImportError:
+            LOGGER.warning(
+                "Thư viện 'pypdf' chưa được cài đặt. Không thể xử lý file PDF: %s",
+                path.name,
+            )
+            return []
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Lỗi khi đọc file PDF %s: %s", path.name, exc)
+            return []
+
+    if suffix == ".docx":
         try:
             from docx import Document
+            from docx.table import Table
+            from docx.text.paragraph import Paragraph
 
-            doc = Document(str(path))
-            full_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-            return [(full_text, None)]
+            document = Document(str(path))
+            parent: Any = document.element.body
+            blocks: list[DocumentBlock] = []
+            for child in parent.iterchildren():
+                if child.tag.endswith("}p"):
+                    paragraph = Paragraph(child, parent)
+                    text = paragraph.text.strip()
+                    if not text:
+                        continue
+                    style_name = str(getattr(paragraph.style, "name", ""))
+                    heading_level: int | None = None
+                    if style_name.lower().startswith("heading"):
+                        match = re.search(r"(\d+)", style_name)
+                        heading_level = int(match.group(1)) if match else 1
+                    blocks.append(
+                        DocumentBlock(
+                            text=text,
+                            block_type="heading" if heading_level else "paragraph",
+                            heading_level=heading_level,
+                        )
+                    )
+                elif child.tag.endswith("}tbl"):
+                    table = Table(child, parent)
+                    for row in table.rows:
+                        values = [cell.text.strip() for cell in row.cells]
+                        values = [value for value in values if value]
+                        if values:
+                            blocks.append(
+                                DocumentBlock(
+                                    text=" | ".join(values),
+                                    block_type="table_row",
+                                )
+                            )
+            return blocks
         except ImportError:
             LOGGER.warning(
                 "Thư viện 'python-docx' chưa được cài đặt. Không thể xử lý file DOCX: %s",
@@ -206,9 +315,7 @@ def read_text(path: Path) -> list[tuple[str, int | None]]:
             LOGGER.error("Lỗi khi đọc file DOCX %s: %s", path.name, exc)
             return []
 
-    raise ValueError(
-        f"Định dạng tệp không được hỗ trợ: '{suffix}' (Chỉ hỗ trợ .txt, .md, .pdf, .docx)"
-    )
+    raise ValueError(f"Định dạng tệp không được hỗ trợ: '{suffix}'.")
 
 
 def split_into_sentences(text: str) -> list[str]:
@@ -235,6 +342,11 @@ def structure_aware_chunk(
     checksum: str | None = None,
     document_id: str | None = None,
     base_chunk_index: int = 0,
+    policy_key: str = "",
+    document_version: str = "",
+    policy_status: str = "active",
+    department: str = "",
+    allowed_groups: list[str] | tuple[str, ...] | None = None,
 ) -> list[Chunk]:
     """Phân tách văn bản dựa trên cấu trúc tài liệu (Tiêu đề, Đoạn văn, Ranh giới câu).
 
@@ -272,7 +384,6 @@ def structure_aware_chunk(
 
     doc_path = source_path or source
     doc_id = document_id or generate_document_id(doc_path)
-    page_str = str(page) if page is not None else "0"
 
     # Phân rã văn bản theo dòng để nhận diện các section
     lines = clean_text.splitlines()
@@ -319,7 +430,13 @@ def structure_aware_chunk(
                 else:
                     chunk_text_with_context = chunk_content
 
-                chunk_id = f"{doc_id}:p{page_str}:c{chunk_counter:03d}"
+                chunk_id = _chunk_id(
+                    doc_id,
+                    document_version,
+                    sec_title,
+                    page,
+                    chunk_counter,
+                )
                 chunks.append(
                     Chunk(
                         chunk_id=chunk_id,
@@ -332,6 +449,11 @@ def structure_aware_chunk(
                         source_path=doc_path,
                         section=sec_title,
                         chunk_index=chunk_counter,
+                        policy_key=policy_key,
+                        document_version=document_version,
+                        policy_status=policy_status,
+                        department=department,
+                        allowed_groups=list(allowed_groups or []),
                     )
                 )
                 chunk_counter += 1
@@ -361,7 +483,13 @@ def structure_aware_chunk(
                 else:
                     chunk_text_with_context = chunk_content
 
-                chunk_id = f"{doc_id}:p{page_str}:c{chunk_counter:03d}"
+                chunk_id = _chunk_id(
+                    doc_id,
+                    document_version,
+                    sec_title,
+                    page,
+                    chunk_counter,
+                )
                 chunks.append(
                     Chunk(
                         chunk_id=chunk_id,
@@ -374,6 +502,11 @@ def structure_aware_chunk(
                         source_path=doc_path,
                         section=sec_title,
                         chunk_index=chunk_counter,
+                        policy_key=policy_key,
+                        document_version=document_version,
+                        policy_status=policy_status,
+                        department=department,
+                        allowed_groups=list(allowed_groups or []),
                     )
                 )
                 chunk_counter += 1
@@ -390,6 +523,12 @@ def chunk_text(
     checksum: str | None = None,
     strategy: str = "sliding_window",
     source_path: str = "",
+    document_id: str | None = None,
+    policy_key: str = "",
+    document_version: str = "",
+    policy_status: str = "active",
+    department: str = "",
+    allowed_groups: list[str] | tuple[str, ...] | None = None,
 ) -> list[Chunk]:
     """Phân tách văn bản theo cấu hình được chỉ định (Sliding Window hoặc Structure-Aware).
 
@@ -422,6 +561,12 @@ def chunk_text(
             target_words=chunk_words,
             overlap_words=overlap_words,
             checksum=checksum,
+            document_id=document_id,
+            policy_key=policy_key,
+            document_version=document_version,
+            policy_status=policy_status,
+            department=department,
+            allowed_groups=allowed_groups,
         )
 
     # Chiến lược Sliding Window cổ điển (dùng cho baseline / ablation)
@@ -432,8 +577,7 @@ def chunk_text(
     chunks: list[Chunk] = []
     step = max(1, chunk_words - overlap_words)
     doc_path = source_path or source
-    doc_id = generate_document_id(doc_path)
-    page_str = str(page) if page is not None else "0"
+    doc_id = document_id or generate_document_id(doc_path)
 
     for i, start_idx in enumerate(range(0, len(words), step)):
         part_words = words[start_idx : start_idx + chunk_words]
@@ -441,7 +585,7 @@ def chunk_text(
             continue
 
         chunk_text_str = " ".join(part_words)
-        chunk_id = f"{doc_id}:p{page_str}:c{i:03d}"
+        chunk_id = _chunk_id(doc_id, document_version, "Nội dung chung", page, i)
 
         chunks.append(
             Chunk(
@@ -454,6 +598,11 @@ def chunk_text(
                 document_id=doc_id,
                 source_path=doc_path,
                 chunk_index=i,
+                policy_key=policy_key,
+                document_version=document_version,
+                policy_status=policy_status,
+                department=department,
+                allowed_groups=list(allowed_groups or []),
             )
         )
 
@@ -489,6 +638,11 @@ def create_document_manifest(
                 "document_id": chunk.document_id,
                 "file_name": chunk.source,
                 "checksum": chunk.checksum,
+                "policy_key": chunk.policy_key,
+                "document_version": chunk.document_version,
+                "policy_status": chunk.policy_status,
+                "department": chunk.department,
+                "allowed_groups": list(chunk.allowed_groups),
                 "chunk_count": 0,
                 "chunk_ids": [],
                 "pages": set(),
@@ -512,14 +666,19 @@ def ingest_folder(
     chunk_words: int = 250,
     overlap_words: int = 40,
     strategy: str = "structure_aware",
+    catalog: list[Any] | None = None,
+    as_of: Any | None = None,
 ) -> list[Chunk]:
-    """Quét toàn bộ thư mục dữ liệu và chuyển đổi tất cả tài liệu thành danh sách Chunks.
+    """Nạp tài liệu thành chunks, có thể bắt buộc đi qua Knowledge Catalog.
 
     Args:
         folder (Union[str, Path]): Thư mục chứa các tệp tài liệu nội bộ.
         chunk_words (int): Kích thước chunk mục tiêu tính theo số từ.
         overlap_words (int): Độ chồng lấp tính theo số từ.
         strategy (str): Chiến lược chunking ("structure_aware" hoặc "sliding_window").
+        catalog (List[CatalogEntry], optional): Catalog đã được validate. Khi có
+            catalog, chỉ tài liệu ACTIVE hiện hành mới được đưa vào index.
+        as_of (date, optional): Ngày kiểm tra hiệu lực; mặc định là hôm nay.
 
     Returns:
         List[Chunk]: Danh sách toàn bộ các chunk thu thập được từ tất cả tài liệu.
@@ -529,20 +688,62 @@ def ingest_folder(
     """
     data_path = Path(folder)
     if not data_path.exists():
-        raise FileNotFoundError(
-            f"Không tìm thấy thư mục dữ liệu: '{data_path.resolve()}'"
-        )
+        raise FileNotFoundError(f"Không tìm thấy thư mục dữ liệu: '{data_path.resolve()}'")
 
     all_chunks: list[Chunk] = []
-    file_paths = sorted([p for p in data_path.rglob("*") if p.is_file()])
+    supported_files = sorted(
+        [
+            p
+            for p in data_path.rglob("*")
+            if p.is_file() and p.suffix.lower() in {".txt", ".md", ".pdf", ".docx"}
+        ]
+    )
+
+    entries_by_file: dict[str, Any] = {}
+    if catalog is not None:
+        from .catalog import active_catalog
+
+        active_entries = active_catalog(catalog, as_of=as_of)
+        entries_by_file = {entry.file: entry for entry in active_entries}
+        file_set = {path.relative_to(data_path).as_posix() for path in supported_files}
+        catalog_files = {entry.file for entry in catalog}
+        missing_catalog = sorted(file_set - catalog_files)
+        if missing_catalog:
+            raise ValueError(
+                "Không được index tài liệu chưa có catalog entry: " + ", ".join(missing_catalog)
+            )
+        file_paths = [
+            data_path / entry.file for entry in active_entries if (data_path / entry.file).exists()
+        ]
+    else:
+        file_paths = supported_files
 
     for path in file_paths:
         try:
             relative_path = path.relative_to(data_path).as_posix()
             file_hash = compute_file_checksum(path)
-            doc_pages = read_text(path)
+            entry = entries_by_file.get(relative_path)
+            if catalog is not None and entry is None:
+                # Tài liệu archived/expired được giữ trong catalog nhưng không vào
+                # production index.
+                continue
 
-            doc_id = generate_document_id(relative_path)
+            blocks = read_document_blocks(path)
+            if path.suffix.lower() == ".pdf":
+                doc_pages = [(block.text, block.page) for block in blocks]
+            else:
+                structured_lines: list[str] = []
+                for block in blocks:
+                    if block.block_type == "heading":
+                        structured_lines.append(f"# {block.text}")
+                    else:
+                        structured_lines.append(block.text)
+                doc_pages = [("\n".join(structured_lines), None)]
+            quality_passed, quality_reason = check_document_quality(path, doc_pages)
+            if not quality_passed:
+                raise ValueError(f"Document Quality Gate thất bại: {quality_reason}")
+
+            doc_id = entry.document_id if entry is not None else generate_document_id(relative_path)
             doc_chunk_counter = 0
 
             for content, page_num in doc_pages:
@@ -559,6 +760,11 @@ def ingest_folder(
                         checksum=file_hash,
                         document_id=doc_id,
                         base_chunk_index=doc_chunk_counter,
+                        policy_key=entry.policy_key if entry is not None else "",
+                        document_version=entry.version if entry is not None else "",
+                        policy_status=entry.policy_status if entry is not None else "active",
+                        department=entry.department if entry is not None else "",
+                        allowed_groups=entry.allowed_groups if entry is not None else None,
                     )
                 else:
                     page_chunks = chunk_text(
@@ -570,13 +776,18 @@ def ingest_folder(
                         checksum=file_hash,
                         strategy="sliding_window",
                         source_path=relative_path,
+                        document_id=doc_id,
+                        policy_key=entry.policy_key if entry is not None else "",
+                        document_version=entry.version if entry is not None else "",
+                        policy_status=entry.policy_status if entry is not None else "active",
+                        department=entry.department if entry is not None else "",
+                        allowed_groups=entry.allowed_groups if entry is not None else None,
                     )
 
                 doc_chunk_counter += len(page_chunks)
                 all_chunks.extend(page_chunks)
-        except ValueError as ve:
-            LOGGER.debug("Bỏ qua tệp %s: %s", path.name, ve)
-            continue
+        except ValueError:
+            raise
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Lỗi không xác định khi xử lý tệp %s: %s", path.name, exc)
             continue

@@ -12,13 +12,13 @@ Gói thư viện chính của dự án. Cung cấp:
 
 from __future__ import annotations
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 __all__ = [
+    "api",
     "config",
+    "evaluate",
+    "generation",
     "ingestion",
     "ranking",
     "retrieval",
-    "generation",
-    "api",
-    "evaluate",
 ]

@@ -7,12 +7,14 @@ ingest:
 download: ingest
 
 index:
-	python -m src.index
+	python scripts/validate_catalog.py
+	python scripts/build_index.py
 
 train: index
 
 evaluate:
-	python -m src.evaluate
+	python scripts/evaluate_dev.py
+	python scripts/evaluate_final.py
 
 ablation:
 	python scripts/ablation_experiments.py

@@ -1,15 +1,4 @@
-"""Module truy xuất tri thức lai chính quy (Canonical Hybrid Retrieval & Reranking Engine).
-
-Tệp này thực hiện đầy đủ quy trình Canonical Online RAG:
-1. Chuẩn hóa truy vấn (Query Normalization).
-2. Tìm kiếm ứng viên kép độc lập (Dual Retrieval):
-   - Dense Vector Search (FAISS IndexFlatIP Top-N).
-   - BM25 Lexical Search (BM25Okapi Top-N).
-3. Hợp nhất tập ứng viên (Candidate Union).
-4. Dung hợp thứ hạng Reciprocal Rank Fusion (RRF).
-5. Xếp hạng lại bằng Cross-Encoder Reranker.
-6. Kiểm định chất lượng bằng chứng (Evidence Quality Gate) trước khi chuyển LLM.
-"""
+"""Authorized Dense + BM25 + RRF retrieval trên ACL shards."""
 
 from __future__ import annotations
 
@@ -18,11 +7,21 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
-from .ranking import BM25Index, CrossEncoderReranker, reciprocal_rank_fusion
+try:
+    import faiss
+except ImportError:  # pragma: no cover - unit test có thể chỉ mock Retriever
+    faiss = None  # type: ignore[assignment]
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:  # pragma: no cover
+    SentenceTransformer = Any  # type: ignore[misc,assignment]
+
+from .config import DEFAULT_EVIDENCE_GATE_THRESHOLD
+from .ranking import BM25Index, CrossEncoderReranker
+from .security import AccessContext
 from .utils import load_json
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.retrieval")
@@ -30,112 +29,159 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def normalize_query(query: str) -> str:
-    """Chuẩn hóa câu hỏi truy vấn của người dùng.
-
-    Thực hiện:
-    - Loại bỏ khoảng trắng thừa đầu cuối và giữa các từ.
-    - Chuẩn hóa Unicode dạng NFKC (tương thích các biến thể gõ tiếng Việt).
-
-    Args:
-        query (str): Câu hỏi thô từ người dùng.
-
-    Returns:
-        str: Chuỗi câu hỏi đã được làm sạch và chuẩn hóa.
-    """
-    normalized = unicodedata.normalize("NFKC", query.strip())
-    # Thu gọn khoảng trắng liên tiếp
+    """Chuẩn hóa Unicode và thu gọn khoảng trắng của câu hỏi."""
+    normalized = unicodedata.normalize("NFKC", str(query).strip())
     return " ".join(normalized.split())
 
 
+def _load_bundle(directory: Path) -> dict[str, Any]:
+    """Nạp và kiểm tra một index bundle (global hoặc shard)."""
+    if faiss is None:
+        raise RuntimeError("Cần cài faiss-cpu để nạp index.")
+    required = ("index.faiss", "chunks.json", "bm25_index.json")
+    missing = [name for name in required if not (directory / name).exists()]
+    if missing:
+        raise FileNotFoundError(f"Bundle {directory} thiếu artifact: {', '.join(missing)}")
+    index = faiss.read_index(str(directory / "index.faiss"))
+    chunks = load_json(directory / "chunks.json")
+    bm25 = BM25Index.from_dict(load_json(directory / "bm25_index.json"))
+    if index.ntotal != len(chunks):
+        raise ValueError(
+            f"FAISS count ({index.ntotal}) != chunks count ({len(chunks)}) tại {directory}."
+        )
+    if len(bm25.tokenized_corpus) != len(chunks):
+        raise ValueError(
+            f"BM25 count ({len(bm25.tokenized_corpus)}) != chunks count ({len(chunks)}) tại {directory}."
+        )
+    return {"index": index, "chunks": chunks, "bm25": bm25}
+
+
+def _resolve_release(root: Path) -> Path:
+    pointer = root / "active_index.json"
+    if not pointer.exists():
+        return root
+    metadata = load_json(pointer)
+    release_path = Path(str(metadata.get("release_path", "")))
+    if not release_path.is_absolute():
+        release_path = root / release_path
+    root_resolved = root.resolve()
+    release_resolved = release_path.resolve()
+    if not release_resolved.is_relative_to(root_resolved):
+        raise ValueError("Active index pointer trỏ ra ngoài model_dir.")
+    if not release_resolved.exists():
+        raise FileNotFoundError(f"Active index trỏ tới release không tồn tại: {release_path}")
+    return release_resolved
+
+
 class Retriever:
-    """Bộ truy xuất tri thức lai kết hợp FAISS Dense Search, BM25 Index, RRF và Cross-Encoder.
+    """Bộ truy xuất chỉ tìm trên shard được AccessContext cấp quyền."""
 
-    Attributes:
-        encoder (SentenceTransformer): Mô hình sinh vector biểu diễn câu hỏi.
-        index (faiss.Index): Chỉ mục FAISS lưu trữ vector tài liệu.
-        chunks (List[Dict[str, Any]]): Danh sách metadata của các chunk.
-        bm25_index (BM25Index): Chỉ mục từ khóa BM25Okapi.
-        reranker (CrossEncoderReranker): Mô hình chấm điểm chéo rerank.
-        config (Dict[str, Any]): Cấu hình chỉ mục được tải từ config.json.
-    """
-
-    def __init__(
-        self,
-        model_dir: str | Path | None = None,
-        use_reranker: bool = True,
-    ) -> None:
-        """Khởi tạo lớp Retriever và nạp toàn bộ artifact cần thiết.
-
-        Args:
-            model_dir (Optional[Union[str, Path]]): Thư mục chứa chỉ mục và metadata.
-                Nếu không chỉ định, mặc định sử dụng 'models/rag_index'.
-            use_reranker (bool): Có sử dụng Cross-Encoder reranker hay không (mặc định: True).
-
-        Raises:
-            FileNotFoundError: Nếu tệp index hoặc metadata không tồn tại.
-            ValueError: Nếu số lượng vector trong FAISS và chunks.json không khớp.
-        """
-        index_dir = Path(model_dir) if model_dir else PROJECT_ROOT / "models/rag_index"
-
+    def __init__(self, model_dir: str | Path | None = None, use_reranker: bool = True) -> None:
+        root = Path(model_dir) if model_dir else PROJECT_ROOT / "models/rag_index"
+        index_dir = _resolve_release(root)
         config_path = index_dir / "config.json"
-        faiss_path = index_dir / "index.faiss"
-        chunks_path = index_dir / "chunks.json"
-        bm25_path = index_dir / "bm25_index.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Không tìm thấy config index tại '{index_dir}'.")
 
-        if not (config_path.exists() and faiss_path.exists() and chunks_path.exists()):
-            raise FileNotFoundError(
-                f"Không tìm thấy đầy đủ tệp artifact chỉ mục tại '{index_dir}'. "
-                "Vui lòng chạy 'python -m src.train' trước khi thực hiện truy xuất."
-            )
-
+        self.root_dir = root
+        self.index_dir = index_dir
         self.config: dict[str, Any] = load_json(config_path)
-        embedding_model_name = self.config.get(
+        self.versioned_acl_release = bool(
+            int(self.config.get("schema_version", 0)) >= 3 and (index_dir / "shards").exists()
+        )
+        self.evidence_gate_threshold = float(
+            self.config.get("evidence_gate_threshold", DEFAULT_EVIDENCE_GATE_THRESHOLD)
+        )
+        self.default_candidate_k = int(self.config.get("candidate_pool_k", 30))
+        self.rrf_k = int(self.config.get("rrf_k", 60))
+        self.rerank_top_k = int(
+            self.config.get("rerank_candidates", self.config.get("rerank_top_k", 20))
+        )
+
+        embedding_model = self.config.get(
             "embedding_model",
             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         )
-        reranker_model_name = self.config.get(
-            "reranker_model",
-            "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        reranker_model = self.config.get(
+            "reranker_model", "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
         )
-        self.evidence_gate_threshold: float = float(
-            self.config.get("evidence_gate_threshold", 0.25)
-        )
-        self.default_candidate_k: int = int(self.config.get("candidate_pool_k", 30))
-        self.rrf_k: int = int(self.config.get("rrf_k", 60))
+        LOGGER.info("Đang tải embedding model '%s'...", embedding_model)
+        self.encoder = SentenceTransformer(embedding_model)
 
-        LOGGER.info("Đang tải mô hình Embedding '%s'...", embedding_model_name)
-        self.encoder = SentenceTransformer(embedding_model_name)
+        # Global bundle dùng cho health/compatibility; production search dùng shards.
+        global_bundle = _load_bundle(index_dir)
+        self.index = global_bundle["index"]
+        self.chunks: list[dict[str, Any]] = global_bundle["chunks"]
+        self.bm25_index: BM25Index = global_bundle["bm25"]
 
-        LOGGER.info("Đang tải FAISS Index từ '%s'...", faiss_path.name)
-        self.index = faiss.read_index(str(faiss_path))
+        self.shards: dict[str, dict[str, Any]] = {}
+        shard_root = index_dir / "shards"
+        if shard_root.exists():
+            for shard_dir in sorted(path for path in shard_root.iterdir() if path.is_dir()):
+                self.shards[shard_dir.name] = _load_bundle(shard_dir)
 
-        self.chunks: list[dict[str, Any]] = load_json(chunks_path)
-
-        if self.index.ntotal != len(self.chunks):
-            raise ValueError(
-                f"Lỗi bất nhất artifact: FAISS index chứa {self.index.ntotal} vectors "
-                f"nhưng chunks.json chứa {len(self.chunks)} phần tử."
-            )
-
-        # Khởi tạo hoặc nạp BM25 Index
-        if bm25_path.exists():
-            LOGGER.info("Đang tải BM25 Index từ '%s'...", bm25_path.name)
-            bm25_data = load_json(bm25_path)
-            self.bm25_index = BM25Index.from_dict(bm25_data)
-        else:
-            LOGGER.info("Tự động xây dựng BM25 Index trong bộ nhớ...")
-            self.bm25_index = BM25Index.from_texts([c["text"] for c in self.chunks])
-
-        # Khởi tạo Cross-Encoder Reranker
-        self.reranker = CrossEncoderReranker(
-            model_name=reranker_model_name,
-            enabled=use_reranker,
-        )
-
+        self.reranker = CrossEncoderReranker(model_name=reranker_model, enabled=use_reranker)
         LOGGER.info(
-            "Canonical Retriever sẵn sàng với %d chunks (Dense + BM25 + RRF + Reranker).",
+            "Retriever sẵn sàng: %d chunks, %d ACL shards, policy=%s.",
             len(self.chunks),
+            len(self.shards),
+            self.config.get("retrieval_policy_version", "unknown"),
         )
+
+    @staticmethod
+    def _authorized(chunk: dict[str, Any], groups: tuple[str, ...]) -> bool:
+        """Defense-in-depth: ACL rỗng hoặc thiếu metadata luôn bị từ chối."""
+        raw_scopes = chunk.get("allowed_groups", chunk.get("security_scope", []))
+        scopes = {str(scope).strip().lower() for scope in (raw_scopes or []) if str(scope).strip()}
+        return bool(scopes and set(groups) & scopes)
+
+    def _search_bundle(
+        self,
+        bundle: dict[str, Any],
+        query_vector: np.ndarray,
+        query: str,
+        pool_size: int,
+        dense_enabled: bool,
+        sparse_enabled: bool,
+        groups: tuple[str, ...],
+        dense_ranks: dict[str, int],
+        dense_scores: dict[str, float],
+        sparse_ranks: dict[str, int],
+        sparse_scores: dict[str, float],
+        chunks_by_id: dict[str, dict[str, Any]],
+    ) -> None:
+        """Tìm trong một shard rồi lọc ACL trước khi đưa vào candidate union."""
+        chunks = bundle["chunks"]
+        if dense_enabled:
+            scores, indices = bundle["index"].search(query_vector, min(pool_size, len(chunks)))
+            for rank, (score, index) in enumerate(zip(scores[0], indices[0], strict=True), start=1):
+                if 0 <= int(index) < len(chunks):
+                    chunk = chunks[int(index)]
+                    if not self._authorized(chunk, groups):
+                        continue
+                    chunk_id = str(chunk.get("chunk_id", ""))
+                    if not chunk_id:
+                        continue
+                    if rank < dense_ranks.get(chunk_id, 10**9):
+                        dense_ranks[chunk_id] = rank
+                        dense_scores[chunk_id] = float(score)
+                        chunks_by_id[chunk_id] = dict(chunk)
+
+        if sparse_enabled:
+            for rank, (index, score) in enumerate(
+                bundle["bm25"].search(query, top_k=pool_size), start=1
+            ):
+                if 0 <= int(index) < len(chunks):
+                    chunk = chunks[int(index)]
+                    if not self._authorized(chunk, groups):
+                        continue
+                    chunk_id = str(chunk.get("chunk_id", ""))
+                    if not chunk_id:
+                        continue
+                    if rank < sparse_ranks.get(chunk_id, 10**9):
+                        sparse_ranks[chunk_id] = rank
+                        sparse_scores[chunk_id] = float(score)
+                        chunks_by_id[chunk_id] = dict(chunk)
 
     def search(
         self,
@@ -146,183 +192,174 @@ class Retriever:
         dense_weight: float | None = None,
         use_reranker: bool = True,
         user_groups: tuple[str, ...] | list[str] | None = None,
+        access_context: AccessContext | None = None,
         max_context_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Tìm kiếm các đoạn văn bản liên quan nhất theo chuẩn Canonical Hybrid RAG Pipeline.
+        """Dense/BM25 -> RRF -> reranker trên authorized shards.
 
-        Quy trình:
-        1. Chuẩn hóa Query.
-        2. Nhánh 1: Dense Search trên FAISS -> Top candidate_k.
-        3. Nhánh 2: BM25 Lexical Search trên BM25Index -> Top candidate_k.
-        4. ACL Authorization Filter: Loại bỏ các chunk nằm ngoài quyền truy cập của người dùng.
-        5. Candidate Union: Hợp nhất toàn bộ ứng viên độc nhất từ hai nhánh.
-        6. Reciprocal Rank Fusion (RRF, k=60) -> Chọn Top 20 ứng viên tốt nhất.
-        7. Cross-Encoder Reranking: Chấm điểm tương tác chéo (query, chunk).
-        8. Near-duplicate suppression & Diversity filter.
-        9. Evidence Quality Gate & Token Budget: Đánh giá bằng chứng theo evidence_score.
-
-        Args:
-            query (str): Câu hỏi của người dùng.
-            k (int): Số lượng kết quả top cần trả về (mặc định: 4).
-            candidate_k (Optional[int]): Kích thước pool ứng viên mỗi nhánh (mặc định: 30).
-            min_score (Optional[float]): Ngưỡng điểm tối thiểu bắt buộc của kết quả.
-            dense_weight (Optional[float]): Tham số hỗ trợ tương thích ngược (nếu =1.0 chỉ dùng Dense, nếu =0.0 chỉ dùng BM25).
-            use_reranker (bool): Kích hoạt Cross-Encoder reranker.
-            user_groups (Optional[Sequence[str]]): Nhóm quyền hạn của người dùng (ví dụ: ['employee', 'hr']).
-            max_context_tokens (Optional[int]): Ngân sách token tối đa cho context.
-
-        Returns:
-            List[Dict[str, Any]]: Danh sách các chunk liên quan nhất kèm thông tin score và gate_passed.
+        ``user_groups`` chỉ còn để tương thích với caller nội bộ cũ. API
+        production truyền ``AccessContext`` do server tạo, không truyền body.
+        ``dense_weight`` chỉ hỗ trợ 0/1 cho baseline; không còn linear fusion.
         """
         clean_query = normalize_query(query)
         if not clean_query:
             return []
+        if getattr(self, "versioned_acl_release", None) is False:
+            LOGGER.error("Từ chối truy vấn artifact cũ chưa có ACL shards; cần build release V1.")
+            return []
+        if dense_weight is not None and dense_weight not in {0.0, 1.0}:
+            raise ValueError(
+                "dense_weight không còn dùng cho linear fusion; chỉ nhận 0.0 hoặc 1.0."
+            )
 
-        total_chunks = len(self.chunks)
-        effective_k = min(max(1, k), total_chunks)
-        pool_size = min(candidate_k or self.default_candidate_k, total_chunks)
-
-        dense_ranks: dict[int, int] = {}
-        dense_scores_map: dict[int, float] = {}
-
-        bm25_ranks: dict[int, int] = {}
-        bm25_scores_map: dict[int, float] = {}
-
-        # 1. Nhánh Dense Vector Search (trừ khi người dùng ép chỉ dùng lexical: dense_weight == 0.0)
-        if dense_weight is None or dense_weight > 0.0:
-            query_vector = self.encoder.encode([clean_query], normalize_embeddings=True)
-            query_arr = np.asarray(query_vector, dtype="float32")
-            raw_scores, raw_indices = self.index.search(query_arr, pool_size)
-
-            for rank_idx, (sc, idx) in enumerate(
-                zip(raw_scores[0], raw_indices[0], strict=True), start=1
-            ):
-                if 0 <= idx < total_chunks:
-                    dense_ranks[int(idx)] = rank_idx
-                    dense_scores_map[int(idx)] = float(sc)
-
-        # 2. Nhánh BM25 Lexical Search (trừ khi người dùng ép chỉ dùng dense: dense_weight == 1.0)
-        if dense_weight is None or dense_weight < 1.0:
-            bm25_results = self.bm25_index.search(clean_query, top_k=pool_size)
-            for rank_idx, (idx, bm_score) in enumerate(bm25_results, start=1):
-                bm25_ranks[idx] = rank_idx
-                bm25_scores_map[idx] = float(bm_score)
-
-        # 3. ACL Authorization Filter: Loại bỏ chunk không có thẩm quyền trước khi hợp nhất
-        def is_chunk_authorized(idx: int) -> bool:
-            if not user_groups:
-                return True
-            chunk_data = self.chunks[idx]
-            scopes = chunk_data.get("security_scope")
-            if scopes is None:
-                sec_obj = chunk_data.get("security", {})
-                scopes = sec_obj.get("allowed_groups", ["public"]) if isinstance(sec_obj, dict) else ["public"]
-            if isinstance(scopes, str):
-                scopes = [scopes]
-            if "public" in scopes:
-                return True
-            return any(g in scopes for g in user_groups)
-
-        filtered_dense_ranks = {i: r for i, r in dense_ranks.items() if is_chunk_authorized(i)}
-        filtered_bm25_ranks = {i: r for i, r in bm25_ranks.items() if is_chunk_authorized(i)}
-
-        # 4. Candidate Union: Hợp nhất toàn bộ ứng viên được cấp quyền
-        union_indices = list(set(filtered_dense_ranks.keys()) | set(filtered_bm25_ranks.keys()))
-        if not union_indices:
+        if access_context is not None:
+            groups = access_context.groups
+        elif user_groups is not None:
+            groups = tuple(
+                str(group).strip().lower() for group in user_groups if str(group).strip()
+            )
+        else:
+            groups = ()
+        if not groups:
             return []
 
-        # 5. Reciprocal Rank Fusion (RRF)
-        rrf_scores = reciprocal_rank_fusion(filtered_dense_ranks, filtered_bm25_ranks, k=self.rrf_k)
+        dense_enabled = dense_weight != 0.0
+        sparse_enabled = dense_weight != 1.0
+        pool_size = max(1, int(candidate_k or self.default_candidate_k))
+        query_vector: np.ndarray | None = None
+        if dense_enabled:
+            query_vector = np.asarray(
+                self.encoder.encode([clean_query], normalize_embeddings=True), dtype="float32"
+            )
 
-        candidate_items: list[dict[str, Any]] = []
-        for idx in union_indices:
-            item = dict(self.chunks[idx])
-            d_sc = dense_scores_map.get(idx, 0.0)
-            b_sc = bm25_scores_map.get(idx, 0.0)
-            r_sc = rrf_scores.get(idx, 0.0)
+        dense_ranks: dict[str, int] = {}
+        dense_scores: dict[str, float] = {}
+        sparse_ranks: dict[str, int] = {}
+        sparse_scores: dict[str, float] = {}
+        chunks_by_id: dict[str, dict[str, Any]] = {}
 
-            item["dense_score"] = round(d_sc, 4)
-            item["bm25_score"] = round(b_sc, 4)
-            item["rrf_score"] = round(r_sc, 6)
-            item["dense_rank"] = filtered_dense_ranks.get(idx)
-            item["bm25_rank"] = filtered_bm25_ranks.get(idx)
-            item["chunk_index_in_corpus"] = idx
-            candidate_items.append(item)
-
-        # Sắp xếp danh sách ứng viên theo RRF score giảm dần
-        candidate_items.sort(key=lambda x: x["rrf_score"], reverse=True)
-
-        # Chọn Top 20 ứng viên tốt nhất đi vào Cross-Encoder Reranker
-        top_rrf_pool = candidate_items[: min(20, len(candidate_items))]
-
-        # 6. Cross-Encoder Reranking
-        if use_reranker:
-            reranked = self.reranker.rerank(clean_query, top_rrf_pool, top_k=min(10, len(top_rrf_pool)))
+        configured_shards = getattr(self, "shards", None)
+        shard_map = (
+            configured_shards if isinstance(configured_shards, dict) and configured_shards else {}
+        )
+        if shard_map:
+            for group in sorted(set(groups)):
+                bundle = shard_map.get(group)
+                if bundle is not None:
+                    self._search_bundle(
+                        bundle,
+                        query_vector
+                        if query_vector is not None
+                        else np.empty((1, 0), dtype="float32"),
+                        clean_query,
+                        pool_size,
+                        dense_enabled,
+                        sparse_enabled,
+                        groups,
+                        dense_ranks,
+                        dense_scores,
+                        sparse_ranks,
+                        sparse_scores,
+                        chunks_by_id,
+                    )
         else:
-            # Nếu không dùng reranker, ánh xạ RRF score về [0, 1]
-            max_possible_rrf = 2.0 / (self.rrf_k + 1)
-            for item in top_rrf_pool:
-                normalized = min(max(item["rrf_score"] / max_possible_rrf, 0.0), 1.0)
-                sc = round(normalized, 4)
-                item["evidence_score"] = sc
-                item["reranker_score"] = None
-                item["retrieval_score"] = sc
-                item["rerank_score"] = sc
-            reranked = top_rrf_pool[:min(10, len(top_rrf_pool))]
+            # Fallback đọc artifact cũ; vẫn deny-by-default và lọc trước fusion.
+            self._search_bundle(
+                {"index": self.index, "chunks": self.chunks, "bm25": self.bm25_index},
+                query_vector if query_vector is not None else np.empty((1, 0), dtype="float32"),
+                clean_query,
+                pool_size,
+                dense_enabled,
+                sparse_enabled,
+                groups,
+                dense_ranks,
+                dense_scores,
+                sparse_ranks,
+                sparse_scores,
+                chunks_by_id,
+            )
 
-        # 7. Near-Duplicate Suppression (bảo toàn tính đa dạng của evidence)
-        selected_diverse: list[dict[str, Any]] = []
-        for cand in reranked:
-            cand_tokens = set(cand.get("text", "").split())
-            is_near_dup = False
-            for sel in selected_diverse:
-                if sel.get("document_id") == cand.get("document_id") and sel.get("section") == cand.get("section"):
-                    sel_tokens = set(sel.get("text", "").split())
-                    jaccard = len(cand_tokens & sel_tokens) / max(1, len(cand_tokens | sel_tokens))
-                    if jaccard > 0.85:
-                        is_near_dup = True
+        if not chunks_by_id:
+            return []
+
+        # Tính RRF theo chunk_id để không làm sai khi shard có bản sao.
+        rrf_scores: dict[str, float] = {}
+        for chunk_id in set(dense_ranks) | set(sparse_ranks):
+            score = 0.0
+            if chunk_id in dense_ranks:
+                score += 1.0 / (self.rrf_k + dense_ranks[chunk_id])
+            if chunk_id in sparse_ranks:
+                score += 1.0 / (self.rrf_k + sparse_ranks[chunk_id])
+            rrf_scores[chunk_id] = score
+
+        candidates: list[dict[str, Any]] = []
+        for chunk_id in rrf_scores:
+            item = dict(chunks_by_id[chunk_id])
+            item.update(
+                {
+                    "dense_score": round(dense_scores.get(chunk_id, 0.0), 4),
+                    "bm25_score": round(sparse_scores.get(chunk_id, 0.0), 4),
+                    "rrf_score": round(rrf_scores[chunk_id], 6),
+                    "dense_rank": dense_ranks.get(chunk_id),
+                    "bm25_rank": sparse_ranks.get(chunk_id),
+                    "allowed_groups": item.get("allowed_groups", item.get("security_scope", [])),
+                }
+            )
+            candidates.append(item)
+        candidates.sort(key=lambda item: (-item["rrf_score"], item.get("chunk_id", "")))
+        candidates = candidates[: min(self.rerank_top_k, len(candidates))]
+
+        reranker_available = False
+        if use_reranker:
+            reranked = self.reranker.rerank(clean_query, candidates, top_k=len(candidates))
+            reranker_available = self.reranker.mode == "neural"
+        else:
+            reranked = candidates
+            for item in reranked:
+                item["reranker_logit"] = None
+                item["reranker_score"] = None
+                item["evidence_score"] = item["rrf_score"]
+                item["retrieval_score"] = item["rrf_score"]
+
+        selected: list[dict[str, Any]] = []
+        for candidate in reranked:
+            tokens = set(str(candidate.get("text", "")).casefold().split())
+            duplicate = False
+            for chosen in selected:
+                if chosen.get("document_id") == candidate.get("document_id") and chosen.get(
+                    "section"
+                ) == candidate.get("section"):
+                    chosen_tokens = set(str(chosen.get("text", "")).casefold().split())
+                    overlap = len(tokens & chosen_tokens) / max(1, len(tokens | chosen_tokens))
+                    if overlap > 0.85:
+                        duplicate = True
                         break
-            if not is_near_dup:
-                selected_diverse.append(cand)
-            if len(selected_diverse) >= effective_k:
+            if not duplicate:
+                selected.append(candidate)
+            if len(selected) >= max(1, k):
                 break
 
-        if not selected_diverse and reranked:
-            selected_diverse = reranked[:effective_k]
-
-        # 8. Token Budget Constraint
         if max_context_tokens is not None:
-            budget_hits: list[dict[str, Any]] = []
-            used_tokens = 0
-            for item in selected_diverse:
-                approx_tokens = int(len(item.get("text", "").split()) * 1.3)
-                if used_tokens + approx_tokens > max_context_tokens and budget_hits:
+            budget: list[dict[str, Any]] = []
+            used = 0
+            for item in selected:
+                estimate = max(1, int(len(str(item.get("text", "")).split()) * 1.3))
+                if used + estimate > max_context_tokens and budget:
                     break
-                budget_hits.append(item)
-                used_tokens += approx_tokens
-            selected_diverse = budget_hits
+                budget.append(item)
+                used += estimate
+            selected = budget
 
-        # 9. Evidence Quality Gate
-        gate_threshold = min_score if min_score is not None else self.evidence_gate_threshold
-        final_results: list[dict[str, Any]] = []
-
-        for item in selected_diverse:
-            score = float(item.get("evidence_score", item.get("retrieval_score", 0.0)))
+        threshold = self.evidence_gate_threshold if min_score is None else float(min_score)
+        result: list[dict[str, Any]] = []
+        for item in selected:
+            score = float(item.get("evidence_score", item.get("rrf_score", 0.0)))
             item["score"] = score
             item["retrieval_score"] = score
             item["evidence_score"] = score
-            item["lexical_score"] = (
-                item["bm25_score"] / 20.0 if item["bm25_score"] > 0 else 0.0
-            )
-
-            # Đánh giá xem chunk có vượt qua Evidence Gate không
-            is_valid_evidence = score >= gate_threshold
-            item["gate_passed"] = is_valid_evidence
-
-            if min_score is not None and not is_valid_evidence:
+            item["reranker_available"] = reranker_available
+            item["gate_passed"] = bool(reranker_available and score >= threshold)
+            if min_score is not None and score < threshold:
                 continue
-
-            final_results.append(item)
-
-        return final_results
-
+            result.append(item)
+        return result

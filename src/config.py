@@ -1,46 +1,51 @@
-"""Cấu hình và tham số hệ thống cho RAG Knowledge Assistant.
+"""Cấu hình bất biến cho pipeline xây dựng chỉ mục.
 
-Tệp này định nghĩa các lớp cấu hình nhẹ và trình xử lý tham số dòng lệnh (CLI).
-Các lớp cấu hình được tối ưu để không tải các mô hình ML nặng khi chỉ cần
-kiểm tra hoặc khởi tạo tham số.
+Các giá trị runtime quan trọng được ghi vào artifact của từng release. Vì vậy
+CLI phải tạo một cấu hình mới thay vì sửa một dataclass đã bị đóng băng.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
+
+DEFAULT_EVIDENCE_GATE_THRESHOLD = 1.72
 
 
 @dataclass(frozen=True)
 class IndexConfig:
-    """Cấu hình lưu trữ thông số chia nhỏ tài liệu (chunking) và xây dựng FAISS Index & BM25 Index.
+    """Cấu hình ingest, catalog và phát hành index.
 
     Attributes:
         data_dir (str): Thư mục chứa dữ liệu tài liệu đầu vào (TXT, MD, PDF, DOCX).
-        model_dir (str): Thư mục lưu trữ artifact (FAISS index, config.json, chunks.json, bm25_index.json).
+        model_dir (str): Thư mục gốc lưu các release bất biến và con trỏ active.
+        catalog_path (str): Catalog là nguồn sự thật về version và ACL.
         chunk_words (int): Số lượng từ mục tiêu trong một chunk tài liệu.
         overlap_words (int): Số lượng từ gối đầu (overlap) giữa 2 chunk liền kề.
         strategy (str): Chiến lược chunking ("structure_aware" hoặc "sliding_window").
         embedding_model (str): Tên mô hình SentenceTransformers để vectorize.
-        reranker_model (str): Tên mô hình Cross-Encoder reranker.
-        candidate_pool_k (int): Số lượng candidate pool trích xuất từ mỗi nhánh (Dense & BM25).
+        reranker_model (str): Tên mô hình multilingual reranker đã benchmark.
+        candidate_pool_k (int): Số ứng viên lấy từ mỗi nhánh Dense/BM25.
         rrf_k (int): Hằng số điều chỉnh Reciprocal Rank Fusion.
-        rerank_top_k (int): Số lượng candidate giữ lại sau reranking.
-        evidence_gate_threshold (float): Ngưỡng điểm chấp nhận bằng chứng trước khi chuyển LLM.
-        use_reranker (bool): Có kích hoạt mô hình neural Cross-Encoder hay không.
+        rerank_top_k (int): Số ứng viên giữ lại sau reranking.
+        evidence_gate_threshold (float): Ngưỡng raw reranker logit được tune trên Dev.
+        use_reranker (bool): Có kích hoạt multilingual reranker hay không.
     """
 
     data_dir: str = "data/raw"
     model_dir: str = "models/rag_index"
+    catalog_path: str = "configs/knowledge_catalog.yaml"
     chunk_words: int = 250
     overlap_words: int = 40
     strategy: str = "structure_aware"
     embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
     candidate_pool_k: int = 30
     rrf_k: int = 60
-    rerank_top_k: int = 5
-    evidence_gate_threshold: float = 0.25
+    rerank_top_k: int = 20
+    context_k: int = 4
+    evidence_gate_threshold: float = DEFAULT_EVIDENCE_GATE_THRESHOLD
     use_reranker: bool = True
 
     def validate(self) -> None:
@@ -65,8 +70,10 @@ class IndexConfig:
             raise ValueError("rrf_k phải lớn hơn 0.")
         if self.rerank_top_k <= 0:
             raise ValueError("rerank_top_k phải lớn hơn 0.")
-        if not (0.0 <= self.evidence_gate_threshold <= 1.0):
-            raise ValueError("evidence_gate_threshold phải nằm trong đoạn [0.0, 1.0].")
+        if self.context_k <= 0:
+            raise ValueError("context_k phải lớn hơn 0.")
+        if not math.isfinite(self.evidence_gate_threshold):
+            raise ValueError("evidence_gate_threshold phải là số hữu hạn.")
 
 
 def parse_args() -> IndexConfig:
@@ -88,7 +95,13 @@ def parse_args() -> IndexConfig:
         "--model-dir",
         type=str,
         default="models/rag_index",
-        help="Đường dẫn thư mục lưu trữ index và artifact (mặc định: models/rag_index)",
+        help="Thư mục gốc lưu release và active pointer (mặc định: models/rag_index)",
+    )
+    parser.add_argument(
+        "--catalog-path",
+        type=str,
+        default="configs/knowledge_catalog.yaml",
+        help="Catalog nguồn sự thật về tài liệu, version và ACL",
     )
     parser.add_argument(
         "--chunk-words",
@@ -124,13 +137,14 @@ def parse_args() -> IndexConfig:
     parser.add_argument(
         "--no-reranker",
         action="store_true",
-        help="Tắt mô hình neural Cross-Encoder để tối ưu latency",
+        help="Tắt multilingual reranker (chỉ dùng cho baseline/evaluation)",
     )
 
     args = parser.parse_args()
     config = IndexConfig(
         data_dir=args.data_dir,
         model_dir=args.model_dir,
+        catalog_path=args.catalog_path,
         chunk_words=args.chunk_words,
         overlap_words=args.overlap_words,
         strategy=args.strategy,
@@ -140,4 +154,3 @@ def parse_args() -> IndexConfig:
     )
     config.validate()
     return config
-

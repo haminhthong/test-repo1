@@ -1,11 +1,11 @@
-"""Module xếp hạng lai (Hybrid Ranking & Fusion Engine).
+"""BM25, RRF và multilingual reranker cho hybrid retrieval.
 
 Tệp này thực hiện các thuật toán:
 1. Tách từ (Tokenization) tiếng Việt có dấu.
 2. Bộ chỉ mục từ khóa thực thụ (BM25 Index) dựa trên thuật toán Robertson BM25Okapi.
 3. Thuật toán dung hợp thứ hạng Reciprocal Rank Fusion (RRF).
-4. Mô hình xếp hạng lại sâu Cross-Encoder Reranker với cơ chế dự phòng (Fallback).
-5. Các hàm bổ trợ tương thích ngược (lexical_overlap, bm25_score_single, hybrid_score).
+4. Mô hình xếp hạng lại sâu Cross-Encoder multilingual.
+5. Các hàm bổ trợ tương thích ngược; ``hybrid_score`` không dùng trong pipeline.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from dataclasses import asdict, dataclass
 from typing import Any
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.ranking")
@@ -132,9 +133,7 @@ def hybrid_score(
         ValueError: Nếu dense_weight không nằm trong khoảng [0.0, 1.0].
     """
     if not (0.0 <= dense_weight <= 1.0):
-        raise ValueError(
-            f"dense_weight={dense_weight} phải nằm trong khoảng [0.0, 1.0]"
-        )
+        raise ValueError(f"dense_weight={dense_weight} phải nằm trong khoảng [0.0, 1.0]")
 
     normalized_dense = min(max((dense_score + 1.0) / 2.0, 0.0), 1.0)
     final_score = dense_weight * normalized_dense + (1.0 - dense_weight) * lexical_score
@@ -176,9 +175,7 @@ class BM25Index:
                 df[term] = df.get(term, 0) + 1
         self._doc_freqs: dict[str, int] = df
         self._avg_doc_len: float = (
-            total_len / len(self.tokenized_corpus)
-            if self.tokenized_corpus
-            else 0.0
+            total_len / len(self.tokenized_corpus) if self.tokenized_corpus else 0.0
         )
 
     @classmethod
@@ -218,9 +215,7 @@ class BM25Index:
             ]
 
         # Sắp xếp và lấy top-k có điểm > 0
-        scored_pairs = [
-            (idx, float(score)) for idx, score in enumerate(scores) if score > 0.0
-        ]
+        scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores) if score > 0.0]
         scored_pairs.sort(key=lambda item: item[1], reverse=True)
         return scored_pairs[:top_k]
 
@@ -276,9 +271,6 @@ def reciprocal_rank_fusion(
     return rrf_scores
 
 
-from dataclasses import asdict, dataclass
-
-
 @dataclass
 class RetrievalCandidate:
     """Cấu trúc dữ liệu đại diện cho một ứng viên truy xuất với hệ thống điểm phân tầng."""
@@ -298,7 +290,12 @@ class RetrievalCandidate:
     evidence_score: float = 0.0
     gate_passed: bool = False
     source_path: str = ""
-    security_scope: tuple[str, ...] = ("public",)
+    document_version: str = ""
+    policy_key: str = ""
+    policy_status: str = ""
+    department: str = ""
+    allowed_groups: tuple[str, ...] = ()
+    security_scope: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Chuyển đổi thành từ điển JSON-serializable."""
@@ -317,7 +314,7 @@ class CrossEncoderReranker:
 
     def __init__(
         self,
-        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_name: str = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
         enabled: bool = True,
     ) -> None:
         """Khởi tạo Cross-Encoder Reranker."""
@@ -328,11 +325,11 @@ class CrossEncoderReranker:
 
     @property
     def mode(self) -> str:
-        """Trạng thái hoạt động thực tế của reranker: 'neural', 'fallback', hoặc 'disabled'."""
+        """Trạng thái thực tế: ``neural``, ``unavailable`` hoặc ``disabled``."""
         if not self.enabled:
             return "disabled"
         model = self._get_model()
-        return "neural" if model is not None else "fallback"
+        return "neural" if model is not None else "unavailable"
 
     def _get_model(self) -> Any:
         """Tải mô hình CrossEncoder theo cơ chế Lazy Loading."""
@@ -348,7 +345,7 @@ class CrossEncoderReranker:
                 LOGGER.info("Cross-Encoder Reranker sẵn sàng.")
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning(
-                    "Không thể khởi tạo Cross-Encoder '%s' (%s). Kích hoạt cơ chế Fallback Ranking.",
+                    "Không thể khởi tạo Cross-Encoder '%s' (%s). Chuyển sang evidence-only.",
                     self.model_name,
                     exc,
                 )
@@ -381,15 +378,12 @@ class CrossEncoderReranker:
                 pairs = [(query, str(cand.get("text", ""))) for cand in candidates]
                 raw_scores = model.predict(pairs)
 
-                # Chuẩn hóa logit qua hàm Sigmoid: 1 / (1 + exp(-x)) thành điểm tương quan [0.0, 1.0].
-                # Lưu ý: Đây là transformed cross-attention relevance score, không phải xác suất đã calibrate.
-                normalized_scores = [
-                    1.0 / (1.0 + math.exp(-float(s))) for s in raw_scores
-                ]
-
-                for cand, score in zip(candidates, normalized_scores, strict=True):
-                    sc = round(score, 4)
+                # Giữ raw logit. Sigmoid không biến điểm thành xác suất đã
+                # calibrate và làm sai semantics của evidence threshold.
+                for cand, raw_score in zip(candidates, raw_scores, strict=True):
+                    sc = round(float(raw_score), 4)
                     cand["reranker_score"] = sc
+                    cand["reranker_logit"] = sc
                     cand["evidence_score"] = sc
                     cand["rerank_score"] = sc
                     cand["retrieval_score"] = sc
@@ -399,17 +393,18 @@ class CrossEncoderReranker:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Lỗi trong quá trình suy luận Cross-Encoder: %s", exc)
 
-        # Fallback Scorer: Kết hợp RRF score và Lexical Overlap
+        # Không dùng heuristic fallback như neural evidence score. Điểm này
+        # chỉ giúp baseline/debug có thứ tự ổn định; service sẽ trả evidence-only.
         for cand in candidates:
             rrf_sc = float(cand.get("rrf_score", 0.0))
             overlap_sc = lexical_overlap(query, str(cand.get("text", "")))
-            fallback_score = min(max(rrf_sc * 25.0 * 0.7 + overlap_sc * 0.3, 0.0), 1.0)
-            sc = round(fallback_score, 4)
+            fallback_score = rrf_sc + overlap_sc
+            sc = round(fallback_score, 6)
             cand["reranker_score"] = None  # Không gán neural score giả
+            cand["reranker_logit"] = None
             cand["evidence_score"] = sc
             cand["rerank_score"] = sc
             cand["retrieval_score"] = sc
 
         candidates.sort(key=lambda item: item["evidence_score"], reverse=True)
         return candidates[:top_k]
-

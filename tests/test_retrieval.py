@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.evaluate import (
     BenchmarkCase,
     calculate_retrieval_metrics,
@@ -156,18 +157,48 @@ def test_document_relevance_not_counted_twice():
 
 def test_evidence_gate_threshold_selected_on_dev_only():
     """Hàm tune_evidence_gate_threshold chỉ cho phép chạy trên tập DEV."""
+
     class FakeRetriever:
         evidence_gate_threshold = 0.25
+
         def search(self, *args, **kwargs):
             return [{"evidence_score": 0.8, "retrieval_score": 0.8}]
 
     dev_cases = [
-        BenchmarkCase(question="Q1", expected_sources=("doc.txt",), split="dev", is_answerable=True),
-        BenchmarkCase(question="Q2", expected_sources=("ABSTAIN",), split="dev", is_answerable=False),
+        BenchmarkCase(
+            question="Q1", expected_sources=("doc.txt",), split="dev", is_answerable=True
+        ),
+        BenchmarkCase(
+            question="Q2", expected_sources=("ABSTAIN",), split="dev", is_answerable=False
+        ),
     ]
     tau = tune_evidence_gate_threshold(dev_cases, FakeRetriever())
     assert 0.1 <= tau <= 0.9
 
-    test_case = BenchmarkCase(question="Q3", expected_sources=("doc.txt",), split="test", is_answerable=True)
+    test_case = BenchmarkCase(
+        question="Q3", expected_sources=("doc.txt",), split="test", is_answerable=True
+    )
     with pytest.raises(AssertionError, match="DEV"):
         tune_evidence_gate_threshold([test_case], FakeRetriever())
+
+
+def test_evidence_gate_tuning_preserves_raw_logit_scale():
+    """Threshold Dev phải theo raw logit, không bị khóa trong khoảng [0, 1]."""
+
+    class RawLogitRetriever:
+        evidence_gate_threshold = 1.72
+
+        def search(self, question, *args, **kwargs):
+            score = 2.4 if question == "answerable" else 1.1
+            return [{"evidence_score": score, "retrieval_score": score}]
+
+    cases = [
+        BenchmarkCase(
+            question="answerable", expected_sources=("doc.txt",), split="dev", is_answerable=True
+        ),
+        BenchmarkCase(
+            question="unanswerable", expected_sources=("ABSTAIN",), split="dev", is_answerable=False
+        ),
+    ]
+    threshold = tune_evidence_gate_threshold(cases, RawLogitRetriever())
+    assert threshold > 1.1

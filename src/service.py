@@ -1,17 +1,8 @@
-"""Module điều phối dịch vụ RAG chính quy (RAG Service Orchestrator).
-
-Chịu trách nhiệm kết nối toàn trình (End-to-End Online Pipeline):
-1. Chuẩn hóa truy vấn và xác thực danh tính / thẩm quyền (Access Context).
-2. Tìm kiếm ứng viên kép Authorized Hybrid Retrieval (FAISS + BM25 + RRF).
-3. Xếp hạng lại bằng Champion Cross-Encoder (kèm cơ chế Fallback).
-4. Kiểm soát chất lượng bằng chứng (Evidence Quality Gate) -> Early Abstention nếu bằng chứng yếu.
-5. Đóng gói ngữ cảnh với ngân sách token (Context Builder & Delimiters).
-6. Sinh câu trả lời căn thực (Grounded Generation) và kiểm định trích dẫn (Citation Validation).
-7. Ghi nhận Telemetry có cấu trúc phục vụ giám sát vận hành.
-"""
+"""Điều phối online pipeline: ACL -> retrieval -> gate -> generation."""
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -20,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .generation import ABSTAIN_PHRASE, generate_grounded_response
-from .utils import save_json
+from .security import AccessContext
 
 if TYPE_CHECKING:
     from .retrieval import Retriever
@@ -30,22 +21,37 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TELEMETRY_DIR = PROJECT_ROOT / "feedback"
 
 
-@dataclass
+@dataclass(frozen=True)
 class QueryRequest:
-    """Yêu cầu hỏi đáp đầu vào chuẩn hóa."""
+    """Yêu cầu nội bộ đã gắn AccessContext tin cậy."""
 
     question: str
-    user_groups: tuple[str, ...] = ("public", "employee")
+    access_context: AccessContext | None = None
     request_id: str = ""
+    # Chỉ giữ để caller prototype cũ chuyển tiếp; API không expose trường này.
+    user_groups: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.request_id:
             object.__setattr__(self, "request_id", f"req_{uuid.uuid4().hex[:12]}")
+        if self.access_context is None and self.user_groups:
+            object.__setattr__(
+                self,
+                "access_context",
+                AccessContext(
+                    user_id="legacy-internal", groups=self.user_groups, auth_method="legacy"
+                ),
+            )
+
+    @property
+    def resolved_access_context(self) -> AccessContext:
+        """Không có context thì deny-by-default."""
+        return self.access_context or AccessContext.deny_all()
 
 
 @dataclass
 class RAGResult:
-    """Kết quả trả lời tri thức chuẩn hóa của toàn hệ thống."""
+    """Response contract công khai của dịch vụ."""
 
     request_id: str
     answer: str
@@ -58,137 +64,185 @@ class RAGResult:
     latency_ms: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        """Chuyển thành từ điển xuất bản API."""
         return asdict(self)
 
 
+def _public_source(hit: dict[str, Any]) -> dict[str, Any]:
+    """Ẩn điểm debug khỏi response user-facing."""
+    return {
+        "chunk_id": hit.get("chunk_id", ""),
+        "document_id": hit.get("document_id", ""),
+        "document": hit.get("source", ""),
+        "source": hit.get("source", ""),
+        "source_path": hit.get("source_path", hit.get("source", "")),
+        "version": hit.get("document_version", hit.get("version", "")),
+        "section": hit.get("section"),
+        "page": hit.get("page"),
+    }
+
+
 class RAGService:
-    """Orchestrator trung tâm quản lý luồng dữ liệu truy vấn tri thức."""
+    """Orchestrator trung tâm, không cho LLM chạy khi policy không pass."""
 
     def __init__(self, retriever: Retriever) -> None:
         self.retriever = retriever
         self.config = retriever.config
-
         self.versions = {
-            "model_version": str(self.config.get("model_version", "rag-evidence-v2")),
-            "index_version": str(self.config.get("index_version", "unknown")),
+            "index": str(self.config.get("index_version", "unknown")),
+            "retrieval_policy": str(self.config.get("retrieval_policy_version", "retrieval-v1")),
+            "generation_policy": str(self.config.get("generation_policy_version", "grounded-v1")),
             "embedding_model": str(self.config.get("embedding_model", "unknown")),
             "reranker_model": str(self.config.get("reranker_model", "unknown")),
-            "reranker_mode": self.retriever.reranker.mode,
         }
+        # Alias phục vụ consumer cũ; contract mới dùng index/retrieval_policy.
+        self.versions["index_version"] = self.versions["index"]
+        self.versions["model_version"] = str(self.config.get("model_version", "enterprise-rag-v1"))
 
     def answer(self, request: QueryRequest) -> RAGResult:
-        """Thực thi chu trình Canonical Online RAG khép kín cho một truy vấn."""
-        start_time = time.perf_counter()
-        req_id = request.request_id
-
-        LOGGER.info("[req=%s] Bắt đầu xử lý câu hỏi: '%s'", req_id, request.question)
-
-        # 1. Truy xuất bằng chứng có kiểm soát thẩm quyền (Authorized Hybrid Search)
+        """Thực thi đúng state machine ANSWER/ABSTAIN/EVIDENCE_ONLY."""
+        started = time.perf_counter()
+        request_id = request.request_id
+        context = request.resolved_access_context
         hits = self.retriever.search(
-            query=request.question,
-            k=int(self.config.get("rerank_top_k", 4)),
+            request.question,
+            k=int(self.config.get("context_k", 4)),
             candidate_k=int(self.config.get("candidate_pool_k", 30)),
             use_reranker=True,
-            user_groups=request.user_groups,
+            access_context=context,
             max_context_tokens=1500,
         )
+        reranker_mode = self.retriever.reranker.mode
+        reranker_ready = reranker_mode == "neural"
+        passed_hits = [hit for hit in hits if hit.get("gate_passed", False)]
+        top_score = max((float(hit.get("evidence_score", 0.0)) for hit in hits), default=0.0)
 
-        # 2. Đánh giá Evidence Gate
-        passed_hits = [h for h in hits if h.get("gate_passed", True)]
-        top_score = max((float(h.get("evidence_score", 0.0)) for h in hits), default=0.0)
-
-        # Early Abstain nếu không có bằng chứng vượt qua ngưỡng
-        if not passed_hits:
-            elapsed = round((time.perf_counter() - start_time) * 1000, 2)
-            LOGGER.info("[req=%s] Early Abstain kích hoạt: Không đủ bằng chứng tin cậy.", req_id)
-            result = RAGResult(
-                request_id=req_id,
-                answer=ABSTAIN_PHRASE,
-                decision={
-                    "action": "abstain",
-                    "answerable": False,
-                    "reason": "INSUFFICIENT_EVIDENCE",
+        # Reranker hỏng không được đi qua gate bằng điểm heuristic. Vẫn có thể
+        # trả evidence-only để người dùng tự kiểm tra nguồn, nhưng tuyệt đối
+        # không gọi LLM như một câu trả lời bình thường.
+        if hits and not reranker_ready:
+            answer, citations, gate_passed, grounding_meta = generate_grounded_response(
+                request.question,
+                hits,
+                max_chunks=int(self.config.get("context_k", 4)),
+                reranker_available=False,
+            )
+            result = self._result(
+                request_id,
+                answer,
+                "EVIDENCE_ONLY",
+                "RERANKER_UNAVAILABLE",
+                hits,
+                citations,
+                {
+                    "evidence_score": top_score,
+                    **grounding_meta,
+                    "evidence_gate_passed": gate_passed,
                 },
-                retrieval={
-                    "pipeline": "hybrid_rrf_reranker",
-                    "candidate_count": len(hits),
-                    "evidence_count": 0,
-                    "reranker_mode": self.retriever.reranker.mode,
-                },
-                grounding={
-                    "evidence_score": round(top_score, 4),
-                    "evidence_gate_passed": False,
-                    "citation_valid": False,
-                    "citation_coverage": 0.0,
-                },
-                citations=[],
-                sources=hits,
-                versions=self.versions,
-                latency_ms=elapsed,
+                started,
+                reranker_mode,
             )
             self._record_telemetry(result)
             return result
 
-        # 3. Grounded Generation & Citation Verification
-        answer_text, citations, gate_passed, ground_meta = generate_grounded_response(
-            question=request.question,
-            hits=passed_hits,
-            max_chunks=int(self.config.get("rerank_top_k", 4)),
-        )
+        if not passed_hits:
+            result = self._result(
+                request_id,
+                ABSTAIN_PHRASE,
+                "ABSTAIN",
+                "NO_EVIDENCE_FOUND" if not hits else "INSUFFICIENT_EVIDENCE",
+                hits,
+                [],
+                {"evidence_score": top_score, "evidence_gate_passed": False},
+                started,
+                reranker_mode,
+            )
+            self._record_telemetry(result)
+            return result
 
-        elapsed = round((time.perf_counter() - start_time) * 1000, 2)
-        result = RAGResult(
-            request_id=req_id,
-            answer=answer_text,
+        answer, citations, gate_passed, grounding_meta = generate_grounded_response(
+            request.question,
+            passed_hits,
+            max_chunks=int(self.config.get("context_k", 4)),
+            reranker_available=reranker_ready,
+        )
+        action = str(grounding_meta.get("action", "ABSTAIN")).upper()
+        result = self._result(
+            request_id,
+            answer,
+            action,
+            str(grounding_meta.get("reason", "UNKNOWN")),
+            hits,
+            citations,
+            {
+                "evidence_score": top_score,
+                **grounding_meta,
+                "evidence_gate_passed": gate_passed,
+                "reranker_logit": max(
+                    (
+                        float(hit["reranker_logit"])
+                        for hit in hits
+                        if hit.get("reranker_logit") is not None
+                    ),
+                    default=None,
+                ),
+            },
+            started,
+            reranker_mode,
+        )
+        self._record_telemetry(result)
+        return result
+
+    def _result(
+        self,
+        request_id: str,
+        answer: str,
+        action: str,
+        reason: str,
+        hits: list[dict[str, Any]],
+        citations: list[dict[str, Any]],
+        grounding: dict[str, Any],
+        started: float,
+        reranker_mode: str,
+    ) -> RAGResult:
+        elapsed = round((time.perf_counter() - started) * 1000, 2)
+        return RAGResult(
+            request_id=request_id,
+            answer=answer,
             decision={
-                "action": ground_meta.get("action", "answer"),
-                "answerable": gate_passed and answer_text != ABSTAIN_PHRASE,
-                "reason": ground_meta.get("reason", "SUFFICIENT_EVIDENCE"),
+                "action": action,
+                "answerable": action == "ANSWER",
+                "reason": reason,
             },
             retrieval={
-                "pipeline": "hybrid_rrf_reranker",
+                "pipeline": "authorized_dense_bm25_rrf_reranker",
                 "candidate_count": len(hits),
-                "evidence_count": len(passed_hits),
-                "reranker_mode": self.retriever.reranker.mode,
+                "evidence_count": len([hit for hit in hits if hit.get("gate_passed", False)]),
+                "reranker_mode": reranker_mode,
+                "acl_mode": self.config.get("acl_mode", "pre_retrieval_shards"),
             },
-            grounding={
-                "evidence_score": round(top_score, 4),
-                "evidence_gate_passed": gate_passed,
-                "citation_valid": ground_meta.get("citation_valid", False),
-                "citation_coverage": ground_meta.get("citation_coverage", 0.0),
-            },
+            grounding=grounding,
             citations=citations,
-            sources=hits,
+            sources=[_public_source(hit) for hit in hits],
             versions=self.versions,
             latency_ms=elapsed,
         )
 
-        self._record_telemetry(result)
-        return result
-
     def _record_telemetry(self, result: RAGResult) -> None:
-        """Ghi nhận log telemetry có cấu trúc (bảo mật, không lưu văn bản nội bộ thô)."""
-        telemetry_event = {
+        """Ghi telemetry không lưu câu hỏi, context hoặc answer thô."""
+        event = {
             "request_id": result.request_id,
             "timestamp": time.time(),
             "latency_ms": result.latency_ms,
             "decision": result.decision.get("action"),
-            "answerable": result.decision.get("answerable"),
-            "evidence_score": result.grounding.get("evidence_score"),
+            "reason": result.decision.get("reason"),
             "evidence_count": result.retrieval.get("evidence_count"),
             "citation_count": len(result.citations),
             "citation_valid": result.grounding.get("citation_valid"),
-            "reranker_mode": result.retrieval.get("reranker_mode"),
-            "index_version": result.versions.get("index_version"),
+            "index_version": result.versions.get("index"),
         }
-
         try:
             TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
-            log_file = TELEMETRY_DIR / "events.jsonl"
-            import json
-
-            with log_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(telemetry_event, ensure_ascii=False) + "\n")
+            with (TELEMETRY_DIR / "events.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception as exc:  # noqa: BLE001
-            LOGGER.debug("Không thể ghi file telemetry: %s", exc)
+            LOGGER.debug("Không thể ghi telemetry: %s", exc)

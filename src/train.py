@@ -1,4 +1,4 @@
-"""Điểm vào dòng lệnh (CLI Entrypoint) để huấn luyện/xây dựng FAISS Index.
+"""Điểm vào CLI xây dựng immutable full index release.
 
 Chạy: python -m src.train --data-dir data/raw --model-dir models/rag_index
 """

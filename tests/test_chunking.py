@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from src.config import IndexConfig
 from src.ingestion import (
     Chunk,
@@ -16,9 +17,7 @@ from src.ranking import hybrid_score, lexical_overlap
 def test_chunking_keeps_source_and_metadata():
     """Kiểm tra việc chia chunk bảo toàn đúng metadata nguồn và độ dài."""
     text = " ".join(["từ_mẫu"] * 600)
-    chunks = chunk_text(
-        text, source="doc_test.txt", page=1, chunk_words=100, overlap_words=10
-    )
+    chunks = chunk_text(text, source="doc_test.txt", page=1, chunk_words=100, overlap_words=10)
 
     assert len(chunks) > 1
     for chunk in chunks:
@@ -30,9 +29,7 @@ def test_chunking_keeps_source_and_metadata():
 def test_chunking_rejects_invalid_overlap():
     """Kiểm tra ngoại lệ khi tham số overlap không hợp lệ."""
     with pytest.raises(ValueError, match="overlap_words"):
-        chunk_text(
-            "Nội dung thử nghiệm", source="test.txt", chunk_words=10, overlap_words=10
-        )
+        chunk_text("Nội dung thử nghiệm", source="test.txt", chunk_words=10, overlap_words=10)
 
 
 def test_index_config_validation():
@@ -141,6 +138,7 @@ def test_detect_corpus_changes_logic():
     """Kiểm tra phát hiện tài liệu mới, sửa đổi, giữ nguyên và bị xóa."""
     import tempfile
     from pathlib import Path
+
     from src.index import detect_corpus_changes
     from src.utils import compute_file_checksum
 
@@ -174,5 +172,3 @@ def test_detect_corpus_changes_logic():
         assert len(changes["unchanged"]) == 1
         assert changes["unchanged"][0].name == "doc1.txt"
         assert changes["deleted"] == ["deleted_doc.txt"]
-
-
