@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -254,7 +254,7 @@ def health_live() -> dict[str, Any]:
     """Kiểm tra tiến trình API đang hoạt động bình thường."""
     return {
         "status": "alive",
-        "timestamp": datetime.now(UTC).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -411,7 +411,7 @@ def record_feedback(payload: FeedbackIn, request: Request) -> dict[str, str]:
     feedback_file = FEEDBACK_DIR / "feedback.jsonl"
 
     record = payload.model_dump()
-    record["received_at"] = datetime.now(UTC).isoformat()
+    record["received_at"] = datetime.now(timezone.utc).isoformat()
 
     try:
         with feedback_file.open("a", encoding="utf-8") as f:

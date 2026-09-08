@@ -8,7 +8,7 @@ import logging
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,7 +61,7 @@ class DocumentRecord:
 
     def __post_init__(self) -> None:
         if not self.ingested_at:
-            self.ingested_at = datetime.now(UTC).isoformat()
+            self.ingested_at = datetime.now(timezone.utc).isoformat()
         if not self.security_scope:
             self.security_scope = list(self.allowed_groups)
 
@@ -163,7 +163,7 @@ def _make_version(chunks: list[Chunk], catalog: list[CatalogEntry]) -> str:
         hasher.update(chunk.chunk_id.encode("utf-8"))
         hasher.update(chunk.content_hash.encode("utf-8"))
     digest = hasher.hexdigest()[:8]
-    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S%f")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
     return f"rag-{stamp}-{digest}"
 
 
@@ -173,7 +173,7 @@ def _activate_release(root: Path, release_path: Path, index_version: str) -> Non
         "schema_version": 1,
         "index_version": index_version,
         "release_path": str(release_path.relative_to(root)).replace("\\", "/"),
-        "activated_at": datetime.now(UTC).isoformat(),
+        "activated_at": datetime.now(timezone.utc).isoformat(),
     }
     pointer_tmp = root / ".active_index.json.tmp"
     save_json(pointer_tmp, pointer)
@@ -238,7 +238,7 @@ def build_index(config: IndexConfig | None = None, incremental: bool = False) ->
             raise ValueError("Embedding count không khớp với chunk count.")
 
         manifest = create_document_manifest(chunks, data_dir)
-        timestamp = datetime.now(UTC).isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         records: dict[str, dict[str, Any]] = {}
         for entry in active_entries:
             doc_chunks = chunks_by_document[entry.document_id]
