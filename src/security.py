@@ -43,7 +43,7 @@ class AccessContext:
 
 def _load_key_mapping(env: Mapping[str, str] | None = None) -> dict[str, dict[str, Any]]:
     """Đọc map API key -> identity từ biến môi trường server-side."""
-    env_map = env or os.environ
+    env_map = os.environ if env is None else env
     raw = env_map.get("RAG_API_KEYS_JSON", "")
     if raw:
         try:
@@ -100,6 +100,6 @@ def is_admin_api_key(api_key: str | None, env: Mapping[str, str] | None = None) 
     """Kiểm tra quyền admin cho endpoint debug bằng cấu hình server-side."""
     if not api_key:
         return False
-    env_map = env or os.environ
+    env_map = os.environ if env is None else env
     configured = env_map.get("RAG_ADMIN_API_KEY", "")
     return bool(configured and api_key == configured)

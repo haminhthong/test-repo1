@@ -9,7 +9,7 @@ import pytest
 from src.api import QueryIn
 from src.catalog import CatalogError, active_catalog, load_catalog
 from src.generation import validate_citation_references
-from src.security import AccessContext, access_context_from_api_key
+from src.security import AccessContext, AuthenticationError, access_context_from_api_key
 
 
 def test_catalog_excludes_expired_version() -> None:
@@ -59,6 +59,34 @@ def test_catalog_rejects_path_traversal(tmp_path) -> None:
         load_catalog(catalog)
 
 
+def test_catalog_rejects_absolute_posix_path(tmp_path) -> None:
+    """Catalog không được biến đường dẫn tuyệt đối thành đường dẫn tương đối."""
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "documents:\n"
+        "  - {document_id: a, policy_key: p, file: /outside/secret.txt, department: hr, "
+        "version: '1', effective_from: '2026-01-01', status: ACTIVE, "
+        "allowed_groups: [employee]}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CatalogError, match="không được trỏ ra ngoài"):
+        load_catalog(catalog)
+
+
+def test_catalog_rejects_unsafe_acl_group(tmp_path) -> None:
+    """Tên ACL không được trở thành đường dẫn shard ngoài release."""
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "documents:\n"
+        "  - {document_id: a, policy_key: p, file: a.txt, department: hr, "
+        "version: '1', effective_from: '2026-01-01', status: ACTIVE, "
+        "allowed_groups: ['../admin']}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CatalogError, match="tên nhóm an toàn"):
+        load_catalog(catalog)
+
+
 def test_query_body_does_not_create_access_groups() -> None:
     payload = QueryIn(question="Câu hỏi hợp lệ", user_groups=["security"])
     assert not hasattr(payload, "user_groups")
@@ -73,6 +101,13 @@ def test_api_key_mapping_is_server_side() -> None:
         },
     )
     assert context == AccessContext(user_id="u1", groups=("hr",))
+
+
+def test_explicit_empty_environment_does_not_fallback_to_process_env(monkeypatch) -> None:
+    """Test isolation không được vô tình đọc key từ environment của process."""
+    monkeypatch.setenv("RAG_API_KEY", "process-key")
+    with pytest.raises(AuthenticationError):
+        access_context_from_api_key("process-key", env={})
 
 
 def test_citation_coverage_is_sentence_level() -> None:

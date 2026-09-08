@@ -94,7 +94,7 @@ class RAGService:
             "embedding_model": str(self.config.get("embedding_model", "unknown")),
             "reranker_model": str(self.config.get("reranker_model", "unknown")),
         }
-        # Alias phục vụ consumer cũ; contract mới dùng index/retrieval_policy.
+        # Bí danh phục vụ thành phần cũ; contract mới dùng index/retrieval_policy.
         self.versions["index_version"] = self.versions["index"]
         self.versions["model_version"] = str(self.config.get("model_version", "enterprise-rag-v1"))
 
@@ -120,7 +120,7 @@ class RAGService:
         # trả evidence-only để người dùng tự kiểm tra nguồn, nhưng tuyệt đối
         # không gọi LLM như một câu trả lời bình thường.
         if hits and not reranker_ready:
-            answer, citations, gate_passed, grounding_meta = generate_grounded_response(
+            answer, citations, _, grounding_meta = generate_grounded_response(
                 request.question,
                 hits,
                 max_chunks=int(self.config.get("context_k", 4)),
@@ -136,7 +136,8 @@ class RAGService:
                 {
                     "evidence_score": top_score,
                     **grounding_meta,
-                    "evidence_gate_passed": gate_passed,
+                    # Không có reranker neural thì chưa thể kết luận gate đạt.
+                    "evidence_gate_passed": False,
                 },
                 started,
                 reranker_mode,

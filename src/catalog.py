@@ -6,6 +6,7 @@ duyệt. Module này cố ý không suy luận quyền từ tên file.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
 VALID_STATUSES = {"ACTIVE", "ARCHIVED", "RETIRED", "DRAFT"}
+GROUP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", flags=re.IGNORECASE)
 
 
 class CatalogError(ValueError):
@@ -70,6 +72,9 @@ def _parse_date(value: Any, field_name: str, index: int) -> date:
 
 
 def _normalise_entry(raw: dict[str, Any], index: int) -> CatalogEntry:
+    if not isinstance(raw, dict):
+        raise CatalogError(f"Catalog record #{index} phải là object.")
+
     required = (
         "document_id",
         "policy_key",
@@ -91,6 +96,11 @@ def _normalise_entry(raw: dict[str, Any], index: int) -> CatalogEntry:
         or any(not isinstance(group, str) or not group.strip() for group in groups)
     ):
         raise CatalogError(f"Catalog record #{index}: allowed_groups phải là danh sách không rỗng.")
+    normalized_groups = tuple(dict.fromkeys(group.strip().lower() for group in groups))
+    if any(not GROUP_PATTERN.fullmatch(group) for group in normalized_groups):
+        raise CatalogError(
+            f"Catalog record #{index}: allowed_groups chỉ được chứa tên nhóm an toàn."
+        )
 
     status = str(raw["status"]).strip().upper()
     if status not in VALID_STATUSES:
@@ -98,14 +108,23 @@ def _normalise_entry(raw: dict[str, Any], index: int) -> CatalogEntry:
             f"Catalog record #{index}: status {status!r} không thuộc {sorted(VALID_STATUSES)}."
         )
 
-    file_path = str(raw["file"]).replace("\\", "/").strip().lstrip("/")
-    if not file_path or Path(file_path).suffix.lower() not in SUPPORTED_SUFFIXES:
+    raw_file = raw["file"]
+    if not isinstance(raw_file, str):
+        raise CatalogError(f"Catalog record #{index}: file phải là chuỗi đường dẫn.")
+    file_path = raw_file.replace("\\", "/").strip()
+    normalized_file = Path(file_path)
+    if (
+        not file_path
+        or file_path.startswith("/")
+        or normalized_file.is_absolute()
+        or ".." in normalized_file.parts
+    ):
+        raise CatalogError(f"Catalog record #{index}: file không được trỏ ra ngoài data_dir.")
+    file_path = normalized_file.as_posix()
+    if Path(file_path).suffix.lower() not in SUPPORTED_SUFFIXES:
         raise CatalogError(
             f"Catalog record #{index}: file phải là định dạng được hỗ trợ: {file_path!r}."
         )
-    normalized_file = Path(file_path)
-    if normalized_file.is_absolute() or ".." in normalized_file.parts:
-        raise CatalogError(f"Catalog record #{index}: file không được trỏ ra ngoài data_dir.")
 
     effective_to_raw = raw.get("effective_to")
     effective_to = (
@@ -126,7 +145,7 @@ def _normalise_entry(raw: dict[str, Any], index: int) -> CatalogEntry:
         effective_from=effective_from,
         effective_to=effective_to,
         status=status,
-        allowed_groups=tuple(dict.fromkeys(group.strip().lower() for group in groups)),
+        allowed_groups=normalized_groups,
     )
     if not entry.document_id or not entry.policy_key or not entry.version or not entry.department:
         raise CatalogError(f"Catalog record #{index}: metadata định danh không được rỗng.")
@@ -189,9 +208,13 @@ def _validate_catalog_invariants(
     if data_dir is None:
         return
 
-    data_path = Path(data_dir)
+    data_path = Path(data_dir).resolve()
     if not data_path.exists():
         raise FileNotFoundError(f"Không tìm thấy thư mục dữ liệu: {data_path.resolve()}")
+    for entry in entries:
+        resolved_file = (data_path / entry.file).resolve()
+        if not resolved_file.is_relative_to(data_path):
+            raise CatalogError(f"Catalog file trỏ ra ngoài data_dir: {entry.file}")
     files = {
         file.relative_to(data_path).as_posix()
         for file in data_path.rglob("*")

@@ -569,7 +569,7 @@ def chunk_text(
             allowed_groups=allowed_groups,
         )
 
-    # Chiến lược Sliding Window cổ điển (dùng cho baseline / ablation)
+    # Chiến lược cửa sổ trượt cổ điển (dùng cho đường cơ sở/thử nghiệm loại trừ).
     words = text.split()
     if not words:
         return []

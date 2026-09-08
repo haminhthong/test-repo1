@@ -69,23 +69,47 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
         ValueError: Nếu định dạng ca kiểm thử không hợp lệ hoặc rỗng.
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Benchmark phải có dạng danh sách các case.")
     cases: list[BenchmarkCase] = []
     for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise ValueError(f"Benchmark case #{index} phải là object: {item!r}")
         question = str(item.get("question", "")).strip()
         raw_sources = item.get("expected_sources", [])
-        sources = tuple(str(value).strip() for value in raw_sources)
+        if not isinstance(raw_sources, list):
+            raise ValueError(f"Benchmark case #{index}: expected_sources phải là danh sách.")
+        sources = tuple(str(value).strip() for value in raw_sources if str(value).strip())
         split = str(item.get("split", "test")).strip().lower()
 
         if not question or not sources or split not in {"dev", "test"}:
             raise ValueError(f"Benchmark case #{index} không hợp lệ: {item}")
 
         raw_docs = item.get("expected_documents", raw_sources)
-        docs = tuple(str(v).strip() for v in raw_docs if str(v).strip() != "ABSTAIN")
+        if not isinstance(raw_docs, list):
+            raise ValueError(f"Benchmark case #{index}: expected_documents phải là danh sách.")
+        docs = tuple(str(v).strip() for v in raw_docs if str(v).strip().upper() != "ABSTAIN")
+        raw_answerable = item.get("is_answerable", True)
+        if not isinstance(raw_answerable, bool):
+            raise ValueError(f"Benchmark case #{index}: is_answerable phải là boolean.")
+        is_answerable = raw_answerable
+        if is_answerable and not docs:
+            raise ValueError(
+                f"Benchmark case #{index}: case trả lời được phải có tài liệu kỳ vọng."
+            )
+        if not is_answerable and docs:
+            raise ValueError(
+                f"Benchmark case #{index}: case không trả lời được không được có tài liệu kỳ vọng."
+            )
 
         raw_secs = item.get("expected_sections", [])
+        if not isinstance(raw_secs, list):
+            raise ValueError(f"Benchmark case #{index}: expected_sections phải là danh sách.")
         sections = tuple(str(v).strip() for v in raw_secs)
 
         raw_evidence = item.get("expected_evidence", [])
+        if not isinstance(raw_evidence, list):
+            raise ValueError(f"Benchmark case #{index}: expected_evidence phải là danh sách.")
         evidence_list: list[dict[str, Any]] = []
         for ev in raw_evidence:
             if isinstance(ev, dict):
@@ -104,7 +128,7 @@ def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkC
                 expected_evidence=tuple(evidence_list),
                 reference_answer=str(item.get("reference_answer", "")),
                 category=str(item.get("category", "factual")),
-                is_answerable=bool(item.get("is_answerable", True)),
+                is_answerable=is_answerable,
             )
         )
 
@@ -148,9 +172,12 @@ def calculate_retrieval_metrics(
         or len(latencies) != len(ranked_sources)
     ):
         raise ValueError("Kết quả, ground truth và latency phải cùng số mẫu, không rỗng.")
+    if k is not None and k <= 0:
+        raise ValueError("k phải lớn hơn 0.")
 
     reciprocal_ranks: list[float] = []
     ndcg_list: list[float] = []
+    recall_list: list[float] = []
     hits_at_one = 0
 
     for sources, expected in zip(ranked_sources, expected_sources, strict=True):
@@ -160,6 +187,7 @@ def calculate_retrieval_metrics(
         eval_sources = unique_preserve_order(sources) if deduplicate else list(sources)
         effective_k = k if k is not None else len(eval_sources)
         eval_sources = eval_sources[:effective_k]
+        recall_list.append(len(set(eval_sources) & expected) / len(expected))
 
         rank = next(
             (
@@ -179,7 +207,7 @@ def calculate_retrieval_metrics(
                 dcg += 1.0 / math.log2(pos + 1)
 
         # Tính toán IDCG@k chuẩn hóa
-        ideal_relevant = min(len(expected), max(1, len(eval_sources)))
+        ideal_relevant = min(len(expected), effective_k)
         idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_relevant))
 
         ndcg_val = (dcg / idcg) if idcg > 0.0 else 0.0
@@ -204,7 +232,7 @@ def calculate_retrieval_metrics(
     p50_index = len(latency_ms) // 2
 
     return {
-        "recall_at_k": round(sum(value > 0 for value in reciprocal_ranks) / total_valid, 4),
+        "recall_at_k": round(statistics.fmean(recall_list), 4),
         "hit_rate_at_1": round(hits_at_one / total_valid, 4),
         "mrr": round(statistics.fmean(reciprocal_ranks), 4),
         "ndcg_at_k": round(statistics.fmean(ndcg_list), 4),
@@ -462,7 +490,7 @@ def evaluate_retrieval_comprehensive(
         "false_answer_rate": false_answer_rate,
         "unanswerable_evaluated": total_unanswerable,
         "top_evidence_token_coverage": avg_keyword_coverage,
-        "avg_keyword_coverage": avg_keyword_coverage,  # Backward-compatible alias
+        "avg_keyword_coverage": avg_keyword_coverage,  # Bí danh tương thích ngược
         "slices": slice_metrics,
     }
 
@@ -514,7 +542,8 @@ def tune_evidence_gate_threshold(
             access_context=BENCHMARK_ACCESS,
         )
         top_sc = max(
-            (h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0
+            (float(h.get("evidence_score", h.get("retrieval_score", float("-inf")))) for h in hits),
+            default=float("-inf"),
         )
         unans_scores.append(top_sc)
 
@@ -528,7 +557,8 @@ def tune_evidence_gate_threshold(
             access_context=BENCHMARK_ACCESS,
         )
         top_sc = max(
-            (h.get("evidence_score", h.get("retrieval_score", 0.0)) for h in hits), default=0.0
+            (float(h.get("evidence_score", h.get("retrieval_score", float("-inf")))) for h in hits),
+            default=float("-inf"),
         )
         ans_scores.append(top_sc)
 
@@ -541,7 +571,9 @@ def tune_evidence_gate_threshold(
 
     # Chỉ thử tại các score quan sát được và ngay phía trên score đó. Cách này
     # giữ đúng thang raw logit, không ép score về khoảng xác suất [0, 1].
-    observed_scores = sorted(set(unans_scores + ans_scores + [best_threshold]))
+    observed_scores = sorted(
+        {score for score in unans_scores + ans_scores + [best_threshold] if math.isfinite(score)}
+    )
     thresholds = sorted(
         set(observed_scores) | {nextafter(score, float("inf")) for score in observed_scores}
     )
@@ -600,7 +632,7 @@ def evaluate_configuration(
             dense_weight=dense_weight,
             use_reranker=False,
             access_context=BENCHMARK_ACCESS,
-            min_score=0.0,
+            min_score=float("-inf"),
         )
         latencies.append(time.perf_counter() - started)
         ranked_sources.append([str(item.get("source", "")) for item in results])

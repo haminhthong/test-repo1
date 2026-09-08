@@ -173,7 +173,7 @@ Ví dụ response rút gọn:
 Endpoint nghiên cứu retrieval, không thuộc API production. Chỉ khả dụng khi
 `ENV` khác `production` và header `X-API-Key` trùng `RAG_ADMIN_API_KEY`.
 
-Request:
+Request (câu hỏi dài 2–2.000 ký tự, `top_k` từ 1–20 và `candidate_k` từ 1–100):
 
 ```json
 {

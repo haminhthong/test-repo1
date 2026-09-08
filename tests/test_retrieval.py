@@ -122,6 +122,18 @@ def test_retrieval_metrics_use_first_relevant_rank():
     assert 0.0 <= metrics["ndcg_at_k"] <= 1.0
 
 
+def test_recall_at_k_measures_relevant_document_coverage():
+    """Recall@K phải phản ánh tỷ lệ tài liệu đúng được tìm thấy."""
+    metrics = calculate_retrieval_metrics(
+        [["right.txt"]],
+        [{"right.txt", "also_right.txt"}],
+        [0.01],
+        k=2,
+    )
+
+    assert metrics["recall_at_k"] == 0.5
+
+
 def test_ndcg_is_always_between_zero_and_one():
     """Bắt buộc nDCG luôn nằm trong khoảng [0.0, 1.0], không thể vượt quá 1.0."""
     # Kịch bản nguy hiểm: Nhiều chunk cùng thuộc 1 document xuất hiện ở top-k
@@ -141,6 +153,18 @@ def test_ndcg_is_always_between_zero_and_one():
     ndcg = float(metrics["ndcg_at_k"])
 
     assert 0.0 <= ndcg <= 1.0, f"LỖI TOÁN HỌC: nDCG={ndcg} vượt ra ngoài [0.0, 1.0]!"
+
+
+def test_ndcg_uses_requested_k_for_ideal_gain():
+    """nDCG phải phạt trường hợp chỉ tìm thấy một phần tài liệu liên quan."""
+    metrics = calculate_retrieval_metrics(
+        [["right.txt"]],
+        [{"right.txt", "also_right.txt"}],
+        [0.01],
+        k=2,
+    )
+
+    assert metrics["ndcg_at_k"] < 1.0
 
 
 def test_document_relevance_not_counted_twice():

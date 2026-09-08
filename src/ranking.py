@@ -194,6 +194,8 @@ class BM25Index:
         Returns:
             List[Tuple[int, float]]: Danh sách (vị trí chunk trong corpus, điểm BM25).
         """
+        if top_k <= 0:
+            raise ValueError("top_k phải lớn hơn 0.")
         query_tokens = tokenize(query)
         if not query_tokens or not self.tokenized_corpus:
             return []
@@ -257,6 +259,11 @@ def reciprocal_rank_fusion(
     Returns:
         Dict[int, float]: Ánh xạ chunk_idx -> điểm RRF đã tính toán.
     """
+    if k <= 0:
+        raise ValueError("RRF k phải lớn hơn 0.")
+    if any(rank <= 0 for rank in [*dense_ranks.values(), *bm25_ranks.values()]):
+        raise ValueError("RRF rank phải bắt đầu từ 1.")
+
     all_candidate_indices = set(dense_ranks.keys()) | set(bm25_ranks.keys())
     rrf_scores: dict[int, float] = {}
 
@@ -393,8 +400,8 @@ class CrossEncoderReranker:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Lỗi trong quá trình suy luận Cross-Encoder: %s", exc)
 
-        # Không dùng heuristic fallback như neural evidence score. Điểm này
-        # chỉ giúp baseline/debug có thứ tự ổn định; service sẽ trả evidence-only.
+        # Không dùng điểm dự phòng heuristic như điểm bằng chứng neural. Điểm này
+        # chỉ giữ thứ tự ổn định cho đường cơ sở/gỡ lỗi; service sẽ trả evidence-only.
         for cand in candidates:
             rrf_sc = float(cand.get("rrf_score", 0.0))
             overlap_sc = lexical_overlap(query, str(cand.get("text", "")))

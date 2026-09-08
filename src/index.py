@@ -56,7 +56,7 @@ class DocumentRecord:
     ingested_at: str = ""
     chunk_count: int = 0
     chunk_ids: list[str] = field(default_factory=list)
-    # Alias để các consumer cũ vẫn đọc được ACL, nhưng giá trị duy nhất là catalog.
+    # Bí danh để các thành phần cũ vẫn đọc được ACL; giá trị gốc vẫn là catalog.
     security_scope: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -140,9 +140,12 @@ def _validate_release(directory: Path) -> None:
     if config.get("chunk_count") != len(global_chunks):
         raise ValueError("config.chunk_count != chunks count trong release.")
     shard_root = directory / "shards"
-    for shard in shard_root.iterdir():
-        if not shard.is_dir():
-            continue
+    if not shard_root.is_dir():
+        raise ValueError("Release schema v3 thiếu thư mục ACL shards.")
+    shard_dirs = sorted(path for path in shard_root.iterdir() if path.is_dir())
+    if not shard_dirs:
+        raise ValueError("Release schema v3 phải có ít nhất một ACL shard.")
+    for shard in shard_dirs:
         shard_chunks = load_json(shard / "chunks.json")
         shard_index = faiss.read_index(str(shard / "index.faiss"))
         shard_bm25 = load_json(shard / "bm25_index.json")
@@ -160,7 +163,7 @@ def _make_version(chunks: list[Chunk], catalog: list[CatalogEntry]) -> str:
         hasher.update(chunk.chunk_id.encode("utf-8"))
         hasher.update(chunk.content_hash.encode("utf-8"))
     digest = hasher.hexdigest()[:8]
-    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S%f")
     return f"rag-{stamp}-{digest}"
 
 
@@ -265,7 +268,7 @@ def build_index(config: IndexConfig | None = None, incremental: bool = False) ->
                 index for index, chunk in enumerate(chunks) if group in set(chunk.allowed_groups)
             ]
             if not selected_indices:
-                continue
+                raise ValueError(f"ACL group {group!r} không có chunk trong release.")
             shard_chunks = [chunks[index] for index in selected_indices]
             shard_vectors = vectors[selected_indices]
             shard_stats[group] = _write_bundle(
@@ -351,7 +354,9 @@ def main() -> None:
     parser.add_argument("--data-dir", type=str, default=None, help="Thư mục tài liệu gốc")
     parser.add_argument("--model-dir", type=str, default=None, help="Thư mục gốc lưu release")
     parser.add_argument("--catalog-path", type=str, default=None, help="Knowledge catalog YAML")
-    parser.add_argument("--incremental", action="store_true", help="Alias audit; vẫn full rebuild")
+    parser.add_argument(
+        "--incremental", action="store_true", help="Bí danh audit; vẫn full rebuild"
+    )
     args = parser.parse_args()
     config = IndexConfig(
         data_dir=args.data_dir or "data/raw",

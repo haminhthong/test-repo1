@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
 from .security import (
     AccessContext,
@@ -68,6 +68,12 @@ def _effective_index_dir() -> Path:
         return resolved_target if resolved_target.is_relative_to(index_root) else INDEX_DIR
     except Exception:  # noqa: BLE001
         return INDEX_DIR
+
+
+def _has_acl_shards(index_dir: Path) -> bool:
+    """Kiểm tra release có shard ACL thật, không chỉ có thư mục rỗng."""
+    shard_root = index_dir / "shards"
+    return shard_root.is_dir() and any(path.is_dir() for path in shard_root.iterdir())
 
 
 def get_retriever() -> Retriever:
@@ -170,7 +176,7 @@ class QueryOut(BaseModel):
         description="Metadata nguồn đã được ACL duyệt, không gồm điểm debug",
     )
     versions: dict[str, str] = Field(..., description="Phiên bản model, index và reranker_mode")
-    # Các trường tương thích ngược (Backward compatibility)
+    # Các trường tương thích ngược.
     model_version: str = Field(default="enterprise-rag-v1")
     index_version: str = Field(default="unknown")
     evidence_gate_passed: bool = Field(default=False)
@@ -179,21 +185,21 @@ class QueryOut(BaseModel):
 class DebugRetrieveIn(BaseModel):
     """Payload cho endpoint nghiên cứu nội bộ /internal/debug/retrieve."""
 
-    question: str
-    top_k: int = 4
-    candidate_k: int | None = None
-    min_score: float | None = None
+    question: str = Field(..., min_length=2, max_length=2000)
+    top_k: int = Field(default=4, ge=1, le=20)
+    candidate_k: int | None = Field(default=None, ge=1, le=100)
+    min_score: FiniteFloat | None = None
     use_reranker: bool = True
 
 
 class FeedbackIn(BaseModel):
     """Payload thu thập phản hồi từ người dùng hoặc người thẩm định."""
 
-    request_id: str
+    request_id: str = Field(..., min_length=2, max_length=128)
     helpful: bool
-    expected_document: str | None = None
-    expected_section: str | None = None
-    reviewer_note: str | None = None
+    expected_document: str | None = Field(default=None, max_length=256)
+    expected_section: str | None = Field(default=None, max_length=256)
+    reviewer_note: str | None = Field(default=None, max_length=2000)
 
 
 # ==============================================================================
@@ -225,7 +231,7 @@ def health() -> dict[str, Any]:
             ready = (
                 ready
                 and int(config_data.get("schema_version", 0)) >= 3
-                and (effective_dir / "shards").exists()
+                and _has_acl_shards(effective_dir)
             )
         except Exception:  # noqa: BLE001
             ready = False
@@ -272,7 +278,7 @@ def health_ready() -> dict[str, Any]:
     try:
         config_data = load_json(effective_dir / "config.json")
         chunks_data = load_json(effective_dir / "chunks.json")
-        if int(config_data.get("schema_version", 0)) < 3 or not (effective_dir / "shards").exists():
+        if int(config_data.get("schema_version", 0)) < 3 or not _has_acl_shards(effective_dir):
             raise HTTPException(
                 status_code=503, detail="Active index chưa phải release schema v3 có ACL shards."
             )

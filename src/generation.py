@@ -49,9 +49,10 @@ def format_context_for_prompt(
         page = html.escape(
             str(hit.get("page")) if hit.get("page") is not None else "null", quote=True
         )
+        safe_text = html.escape(text, quote=False)
         context_blocks.append(
             f'<evidence id="C{index}" document="{source}" page="{page}" section="{section}">\n'
-            f"{text}\n</evidence>"
+            f"{safe_text}\n</evidence>"
         )
         used_tokens += approx_tokens
     return "\n\n".join(context_blocks)
@@ -71,7 +72,7 @@ def format_context_for_fallback(hits: list[dict[str, Any]], max_chunks: int = 4)
 
 
 def format_context(hits: list[dict[str, Any]], max_chunks: int = 4) -> str:
-    """Alias tương thích ngược; semantics hiện tại là evidence-only."""
+    """Bí danh tương thích ngược; ngữ nghĩa hiện tại là evidence-only."""
     return format_context_for_fallback(hits, max_chunks=max_chunks)
 
 

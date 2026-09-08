@@ -86,9 +86,17 @@ class Retriever:
         self.root_dir = root
         self.index_dir = index_dir
         self.config: dict[str, Any] = load_json(config_path)
-        self.versioned_acl_release = bool(
-            int(self.config.get("schema_version", 0)) >= 3 and (index_dir / "shards").exists()
+        shard_root = index_dir / "shards"
+        shard_dirs = (
+            sorted(path for path in shard_root.iterdir() if path.is_dir())
+            if shard_root.is_dir()
+            else []
         )
+        self.versioned_acl_release = bool(
+            int(self.config.get("schema_version", 0)) >= 3 and shard_dirs
+        )
+        if int(self.config.get("schema_version", 0)) >= 3 and not self.versioned_acl_release:
+            raise ValueError("Release schema v3 phải có ít nhất một ACL shard.")
         self.evidence_gate_threshold = float(
             self.config.get("evidence_gate_threshold", DEFAULT_EVIDENCE_GATE_THRESHOLD)
         )
@@ -108,17 +116,15 @@ class Retriever:
         LOGGER.info("Đang tải embedding model '%s'...", embedding_model)
         self.encoder = SentenceTransformer(embedding_model)
 
-        # Global bundle dùng cho health/compatibility; production search dùng shards.
+        # Bundle toàn cục dùng cho health/tương thích; production search dùng shards.
         global_bundle = _load_bundle(index_dir)
         self.index = global_bundle["index"]
         self.chunks: list[dict[str, Any]] = global_bundle["chunks"]
         self.bm25_index: BM25Index = global_bundle["bm25"]
 
         self.shards: dict[str, dict[str, Any]] = {}
-        shard_root = index_dir / "shards"
-        if shard_root.exists():
-            for shard_dir in sorted(path for path in shard_root.iterdir() if path.is_dir()):
-                self.shards[shard_dir.name] = _load_bundle(shard_dir)
+        for shard_dir in shard_dirs:
+            self.shards[shard_dir.name] = _load_bundle(shard_dir)
 
         self.reranker = CrossEncoderReranker(model_name=reranker_model, enabled=use_reranker)
         LOGGER.info(

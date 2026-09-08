@@ -115,10 +115,16 @@ Khi đủ dependencies, `scripts/evaluate_dev.py` sẽ:
 3. chạy canonical pipeline đúng một lần trên `test` đã khóa;
 4. ghi `reports/dev_metrics.json` và `reports/final_test_metrics.json`.
 
-`Recall@K`, `MRR`, `nDCG@K`, true abstention, false answer và citation
-validity được tính từ code đánh giá; nDCG được kiểm tra trong khoảng `[0, 1]`.
+`Recall@K`, `MRR`, `nDCG@K`, true abstention, false answer và evidence metrics
+được tính từ code đánh giá; nDCG được kiểm tra trong khoảng `[0, 1]`.
 `scripts/ablation_experiments.py` chỉ phục vụ so sánh trên Dev, không dùng
 locked test để chọn cấu hình.
+
+Evaluator hiện sinh trực tiếp retrieval/evidence/gate metrics. Citation validity
+ở runtime được kiểm tra bởi `validate_citation_references`; hàm
+`evaluate_citation_metrics` dùng khi có generation harness cung cấp answer, còn
+headline citation/answer coverage vẫn để `Pending` nếu chưa có locked generation
+run. README không suy diễn các chỉ số này từ report cũ.
 
 ## Corpus / Data Snapshot
 
@@ -318,8 +324,9 @@ Các invariant bắt buộc của release:
 - Citation validator không đồng nghĩa với semantic entailment.
 
 Chi tiết API, header, payload và mã lỗi xem tại
-[`docs/API.md`](docs/API.md). Chi tiết quyết định reliability và đánh giá xem
-tại [`RESEARCH_REPORT.md`](RESEARCH_REPORT.md).
+[`docs/API.md`](docs/API.md). Kết quả đánh giá được sinh thành JSON trong
+`reports/`; README là tài liệu canonical để tránh duy trì thêm một báo cáo
+Markdown trùng lặp.
 
 ## Cấu Trúc Thư Mục Dự Án (Project Structure)
 
@@ -361,8 +368,7 @@ Rag-Knowledge-Assistant/
 ├── Dockerfile
 ├── Makefile
 ├── pyproject.toml
-├── requirements.txt
-└── RESEARCH_REPORT.md
+└── requirements.txt
 ~~~
 
 ## Hướng Dẫn Cài Đặt & Chạy Thử Nghiệm
