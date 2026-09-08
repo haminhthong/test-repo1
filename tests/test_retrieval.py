@@ -7,6 +7,7 @@ import pytest
 from src.evaluate import (
     BenchmarkCase,
     calculate_retrieval_metrics,
+    evaluate_retrieval_comprehensive,
     load_benchmark,
     tune_evidence_gate_threshold,
 )
@@ -202,3 +203,36 @@ def test_evidence_gate_tuning_preserves_raw_logit_scale():
     ]
     threshold = tune_evidence_gate_threshold(cases, RawLogitRetriever())
     assert threshold > 1.1
+
+
+def test_evaluation_keeps_negative_reranker_logits() -> None:
+    """Benchmark không được loại ứng viên chỉ vì raw logit nhỏ hơn 0."""
+
+    class FakeReranker:
+        mode = "neural"
+
+    class FakeRetriever:
+        evidence_gate_threshold = 1.72
+        reranker = FakeReranker()
+
+        def search(self, *args, **kwargs):
+            assert kwargs["min_score"] == float("-inf")
+            return [
+                {
+                    "source": "policy.txt",
+                    "text": "Nội dung chính sách",
+                    "evidence_score": -0.4,
+                    "retrieval_score": -0.4,
+                }
+            ]
+
+    case = BenchmarkCase(
+        question="Câu hỏi",
+        expected_sources=("policy.txt",),
+        expected_documents=("policy.txt",),
+        split="test",
+        reference_answer="Nội dung chính sách",
+    )
+    metrics = evaluate_retrieval_comprehensive(FakeRetriever(), [case], top_k=4)
+
+    assert metrics["recall_at_k"] == 1.0

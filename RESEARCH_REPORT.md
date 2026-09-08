@@ -6,10 +6,14 @@ Các số liệu chỉ được công bố sau khi chạy `scripts/evaluate_dev.
 `reports/dev_metrics.json` và `reports/final_test_metrics.json`; Markdown này
 không hard-code metric cũ và không sử dụng locked test để chọn cấu hình.
 
-## Contract V1
+## Contract kỹ thuật schema v3
+
+README chứa sơ đồ Mermaid canonical duy nhất. Báo cáo này dùng cùng thứ tự bước
+Offline/Online và chỉ ghi nhận các kết quả sinh ra từ code, không định nghĩa
+một pipeline khác.
 
 ```text
-Approved documents
+Policy documents
   -> Knowledge Catalog (document_id, policy_key, version, effective dates, ACL)
   -> Document Quality Gate
   -> Structure-aware chunks

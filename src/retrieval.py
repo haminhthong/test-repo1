@@ -205,7 +205,9 @@ class Retriever:
         if not clean_query:
             return []
         if getattr(self, "versioned_acl_release", None) is False:
-            LOGGER.error("Từ chối truy vấn artifact cũ chưa có ACL shards; cần build release V1.")
+            LOGGER.error(
+                "Từ chối truy vấn artifact cũ chưa có ACL shards; cần build release schema v3."
+            )
             return []
         if dense_weight is not None and dense_weight not in {0.0, 1.0}:
             raise ValueError(

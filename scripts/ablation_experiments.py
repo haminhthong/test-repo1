@@ -42,7 +42,8 @@ def _retrieval_rows(
             dense_weight=dense_weight,
             use_reranker=use_reranker,
             access_context=DEV_ACCESS,
-            min_score=0.0,
+            # Giữ cả raw logit âm để không làm sai thứ hạng baseline.
+            min_score=float("-inf"),
         )
         latencies.append(time.perf_counter() - started)
         ranked.append([str(hit.get("source", "")) for hit in hits])

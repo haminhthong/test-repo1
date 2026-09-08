@@ -338,6 +338,12 @@ def evaluate_retrieval_comprehensive(
     category_expected: dict[str, list[set[str]]] = {}
     category_latencies: dict[str, list[float]] = {}
 
+    gate_threshold = float(
+        getattr(retriever, "evidence_gate_threshold", DEFAULT_EVIDENCE_GATE_THRESHOLD)
+    )
+    reranker_mode = str(getattr(getattr(retriever, "reranker", None), "mode", ""))
+    gate_available = use_reranker and reranker_mode == "neural"
+
     abstain_correct = 0
     total_unanswerable = 0
     false_answers = 0
@@ -351,7 +357,8 @@ def evaluate_retrieval_comprehensive(
             dense_weight=dense_weight,
             use_reranker=use_reranker,
             access_context=access_context,
-            min_score=0.0,
+            # Không lọc theo score khi đo retrieval; raw logit có thể âm.
+            min_score=float("-inf"),
         )
         elapsed = time.perf_counter() - started
         latencies.append(elapsed)
@@ -378,7 +385,15 @@ def evaluate_retrieval_comprehensive(
         category_latencies[cat].append(elapsed)
 
         # Đánh giá Grounding / Abstention
-        gate_all_failed = not results or all(not r.get("gate_passed", True) for r in results)
+        gate_all_failed = (
+            not results
+            or not gate_available
+            or all(
+                float(item.get("evidence_score", item.get("retrieval_score", float("-inf"))))
+                < gate_threshold
+                for item in results
+            )
+        )
         if not case.is_answerable:
             total_unanswerable += 1
             if gate_all_failed:

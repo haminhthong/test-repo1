@@ -150,7 +150,7 @@ class SourceItem(BaseModel):
 
 
 class QueryOut(BaseModel):
-    """Payload đầu ra chuẩn hóa cho câu trả lời và trích dẫn theo Architecture v2."""
+    """Payload đầu ra chuẩn hóa cho câu trả lời và trích dẫn theo contract v3."""
 
     request_id: str = Field(..., description="Mã truy vết duy nhất của request")
     answer: str = Field(..., description="Câu trả lời tổng hợp căn thực hoặc thông báo từ chối")
@@ -209,7 +209,7 @@ class FeedbackIn(BaseModel):
 def health() -> dict[str, Any]:
     """Kiểm tra tổng quan trạng thái, không làm lộ đường dẫn filesystem."""
     effective_dir = _effective_index_dir()
-    required_files = ("config.json", "index.faiss", "chunks.json")
+    required_files = ("config.json", "index.faiss", "chunks.json", "bm25_index.json")
     ready = all((effective_dir / filename).exists() for filename in required_files)
 
     model_version = "not_trained"
@@ -274,7 +274,7 @@ def health_ready() -> dict[str, Any]:
         chunks_data = load_json(effective_dir / "chunks.json")
         if int(config_data.get("schema_version", 0)) < 3 or not (effective_dir / "shards").exists():
             raise HTTPException(
-                status_code=503, detail="Active index chưa phải release V1 có ACL shards."
+                status_code=503, detail="Active index chưa phải release schema v3 có ACL shards."
             )
         retriever_inst = get_retriever()
 
@@ -354,7 +354,7 @@ def query(payload: QueryIn, request: Request) -> QueryOut:
             versions=res.versions,
             model_version=res.versions.get("model_version", "enterprise-rag-v1"),
             index_version=res.versions.get("index", "unknown"),
-            evidence_gate_passed=bool(res.grounding.get("evidence_gate_passed", True)),
+            evidence_gate_passed=bool(res.grounding.get("evidence_gate_passed", False)),
         )
     except HTTPException:
         raise
@@ -398,8 +398,9 @@ def debug_retrieve(payload: DebugRetrieveIn, request: Request) -> dict[str, Any]
     summary="Ghi nhận phản hồi người dùng phục vụ Continuous Improvement Loop",
     response_model=dict[str, str],
 )
-def record_feedback(payload: FeedbackIn) -> dict[str, str]:
-    """Thu thập tín hiệu phản hồi vào feedback/feedback.jsonl."""
+def record_feedback(payload: FeedbackIn, request: Request) -> dict[str, str]:
+    """Thu thập tín hiệu phản hồi vào feedback/feedback.jsonl sau khi xác thực."""
+    get_access_context(request)
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)
     feedback_file = FEEDBACK_DIR / "feedback.jsonl"
 
