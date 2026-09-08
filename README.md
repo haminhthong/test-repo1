@@ -1,6 +1,13 @@
 # Vietnamese Enterprise Policy RAG
 
-[![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/ci.yml)
+[![Python Version](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![FAISS](https://img.shields.io/badge/FAISS-1.11.0-005571.svg)](https://github.com/facebookresearch/faiss)
+[![BM25](https://img.shields.io/badge/BM25-rank__bm25-6f42c1.svg)](https://github.com/dorianbrown/rank_bm25)
+[![Sentence Transformers](https://img.shields.io/badge/Sentence--Transformers-5.1.0-orange.svg)](https://www.sbert.net/)
+[![Ruff](https://img.shields.io/badge/lint-Ruff-D7FF64.svg)](https://docs.astral.sh/ruff/)
+[![Pytest](https://img.shields.io/badge/test-Pytest-0A9EDC.svg)](https://pytest.org/)
 
 Trợ lý RAG tra cứu chính sách nội bộ bằng tiếng Việt. Hệ thống xử lý tài liệu
 theo version và ngày hiệu lực, kiểm soát ACL trước retrieval, kết hợp Dense với
@@ -51,19 +58,21 @@ hình và báo cáo. Tên bước trong sơ đồ tương ứng với `src/catal
 ~~~mermaid
 flowchart TD
     subgraph OFFLINE["OFFLINE INDEX PIPELINE"]
-        D["Policy documents"] --> C["Catalog validation"]
+        D["data/raw policy documents"] --> C["Catalog validation"]
+        M["knowledge_catalog.yaml"] --> C
         C --> Q["Document QA"]
         Q --> K["Structure-aware chunking"]
         K --> I["Dense + BM25 index"]
         I --> S["ACL shards"]
         S --> V["Release validation"]
         V --> P["Atomic promotion"]
+        P --> R["models/rag_index/releases/<version>"]
     end
 
     subgraph ONLINE["ONLINE QUERY PIPELINE"]
         U["User + X-API-Key"] --> A["Server-side AccessContext"]
-        A --> R["ACL-filtered retrieval"]
-        R --> H["Dense + BM25"]
+        A --> AR["ACL-filtered retrieval"]
+        AR --> H["Dense + BM25"]
         H --> F["RRF"]
         F --> X["Multilingual Cross-Encoder"]
         X --> G{"Evidence Gate"}
@@ -74,9 +83,15 @@ flowchart TD
         CV -->|invalid| EO["EVIDENCE_ONLY"]
         X -. unavailable .-> EO
         L -. error .-> EO
+        AB --> OUT["REST response"]
+        AN --> OUT
+        EO --> OUT
     end
 
-    P -. active release .-> A
+    R -. active release .-> AR
+    E["data/evaluation/questions.json"] --> T["Dev tuning + locked Test"]
+    T --> J["reports/*.json"]
+    OUT --> FB["feedback/events.jsonl"]
 ~~~
 
 Ý nghĩa vận hành:
@@ -92,6 +107,22 @@ flowchart TD
 - Evidence Gate được tune trên Dev. Evidence không đủ đi thẳng đến `ABSTAIN`.
 - Reranker/LLM không sẵn sàng hoặc citation validation thất bại thì không tạo
   câu trả lời tổng hợp bình thường; hệ thống trả `EVIDENCE_ONLY`.
+
+## Luồng dữ liệu và artifact
+
+| Dữ liệu đầu vào | Thành phần xử lý | Artifact hoặc kết quả | Nơi sử dụng tiếp |
+|---|---|---|---|
+| Tài liệu trong `data/raw` và catalog | `catalog.py` + `ingestion.py` | Catalog hợp lệ, tài liệu active, chunks có metadata | `index.py` |
+| Chunks active và ACL groups | `index.py` | Release immutable gồm FAISS, BM25, manifest và ACL shards | `retrieval.py` |
+| API key server-side + câu hỏi | `security.py` + `api.py` | `AccessContext` và query nội bộ đã xác thực | `service.py` |
+| Query + `AccessContext` | `retrieval.py` + `ranking.py` | Candidate Dense/BM25, RRF, reranked evidence | Evidence Gate |
+| Evidence đã qua gate | `generation.py` + Ollama tùy chọn | `ANSWER`, `ABSTAIN` hoặc `EVIDENCE_ONLY` kèm citations | REST response |
+| Benchmark Dev/Locked Test | `evaluate.py` | `reports/*.json`, không commit | Tuning và audit |
+| Metadata telemetry không chứa nội dung thô | `service.py` | `feedback/events.jsonl` | Theo dõi vận hành |
+
+Raw corpus mẫu được tạo bằng `scripts/download_data.py` và bị ignore khỏi Git;
+CI luôn tái tạo corpus trước khi validate để một checkout mới không phụ thuộc
+file cục bộ của máy phát triển.
 
 ## Benchmark & Evaluation Status
 
@@ -153,6 +184,21 @@ Raw corpus mẫu được tạo bởi `scripts/download_data.py`, gồm các nh�
 Finance và Security. `annual_leave_policy_2025.txt` là hard negative đã hết
 hiệu lực; version hiện hành phải được chọn thông qua catalog và `as_of` date,
 không chọn theo tên file.
+
+## CI và tính tái lập
+
+Workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) chạy trên Python
+3.10 và 3.11 cho mỗi push hoặc pull request. CI thực hiện cùng một chuỗi kiểm
+tra tối thiểu của repo:
+
+1. cài dependencies từ `requirements.txt`;
+2. tạo lại corpus mẫu bằng `scripts/download_data.py`;
+3. validate catalog và coverage file;
+4. chạy Ruff lint, Ruff format check và toàn bộ pytest.
+
+CI chưa tự tải model embedding/reranker để build release production và chưa
+điền số benchmark. Việc đó cần một locked-test run có model cache và được mô
+tả rõ là `Pending` ở phần benchmark, không dùng số giả.
 
 ## Offline Index Pipeline
 
@@ -341,9 +387,12 @@ Rag-Knowledge-Assistant/
 │   └── evaluation/               # Human benchmark và synthetic regression
 ├── docs/
 │   └── API.md                    # Tài liệu REST API chi tiết
+├── .github/
+│   └── workflows/ci.yml          # Lint, format, catalog validation và test
 ├── models/
 │   └── rag_index/                # Release sinh lúc build, không commit
-├── reports/                      # JSON sinh lúc evaluate/ablation
+├── reports/                      # JSON sinh lúc evaluate/ablation, không commit
+├── feedback/                     # Telemetry runtime, không commit
 ├── scripts/
 │   ├── download_data.py          # Tạo corpus mẫu
 │   ├── validate_catalog.py       # Kiểm tra catalog/coverage
