@@ -1,0 +1,53 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    name: Build và smoke test Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Thiết lập Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image cục bộ
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: local/enterprise-rag:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test API container
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker run -d -p 8000:8000 local/enterprise-rag:${GITHUB_SHA})"
+          cleanup() {
+            docker logs "$container_id" || true
+            docker rm -f "$container_id" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:8000/health >/tmp/health.json; then
+              python -c "import json; data=json.load(open('/tmp/health.json', encoding='utf-8')); assert data['status'] in {'ok', 'degraded'}"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API container không phản hồi health check" >&2
+          exit 1

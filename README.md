@@ -1,6 +1,7 @@
 # Vietnamese Enterprise Policy RAG
 
 [![CI](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/ci.yml)
+[![CD](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/cd.yml/badge.svg)](https://github.com/haminhthong/Enterprise-Rag-Assistant/actions/workflows/cd.yml)
 [![Python Version](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![FAISS](https://img.shields.io/badge/FAISS-1.11.0-005571.svg)](https://github.com/facebookresearch/faiss)
@@ -188,8 +189,8 @@ không chọn theo tên file.
 ## CI và tính tái lập
 
 Workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) chạy trên Python
-3.10 và 3.11 cho mỗi push hoặc pull request. CI thực hiện cùng một chuỗi kiểm
-tra tối thiểu của repo:
+3.10 và 3.11 cho mỗi push, pull request hoặc manual dispatch. CI thực hiện cùng
+một chuỗi kiểm tra tối thiểu của repo:
 
 1. cài dependencies từ `requirements.txt`;
 2. tạo lại corpus mẫu bằng `scripts/download_data.py`;
@@ -199,6 +200,20 @@ tra tối thiểu của repo:
 CI chưa tự tải model embedding/reranker để build release production và chưa
 điền số benchmark. Việc đó cần một locked-test run có model cache và được mô
 tả rõ là `Pending` ở phần benchmark, không dùng số giả.
+
+Workflow [`.github/workflows/cd.yml`](.github/workflows/cd.yml) là release gate
+cho container:
+
+- tag dạng `vX.Y.Z` hoặc manual run sẽ build Docker image;
+- container được chạy smoke test qua `GET /health` trước khi release được xem
+  là hợp lệ;
+- workflow không tự push image hoặc deploy production vì repo chưa có registry,
+  cluster và secret deployment được ủy quyền.
+
+Docker context loại `data/raw`, `models`, `feedback` và các artifact sinh tự
+động. Index release phải được build/promote riêng rồi mount vào runtime qua
+`models/rag_index`; vì vậy image có thể khởi động ở trạng thái `degraded` khi
+chưa mount index, còn `/health/ready` mới là readiness contract production.
 
 ## Offline Index Pipeline
 
@@ -388,7 +403,9 @@ Rag-Knowledge-Assistant/
 ├── docs/
 │   └── API.md                    # Tài liệu REST API chi tiết
 ├── .github/
-│   └── workflows/ci.yml          # Lint, format, catalog validation và test
+│   └── workflows/
+│       ├── ci.yml                # Lint, format, catalog validation và test
+│       └── cd.yml                # Build và smoke test Docker image
 ├── models/
 │   └── rag_index/                # Release sinh lúc build, không commit
 ├── reports/                      # JSON sinh lúc evaluate/ablation, không commit

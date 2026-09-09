@@ -4,7 +4,11 @@
 __pycache__
 **/__pycache__
 .pytest_cache
+.ruff_cache
 tests
 reports
+feedback
+data/raw
+models
 *.pyc
 *.log
