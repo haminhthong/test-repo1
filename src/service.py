@@ -1,4 +1,4 @@
-"""Điều phối online pipeline: ACL -> retrieval -> gate -> generation."""
+"""Điều phối pipeline trực tuyến: ACL -> retrieval -> gate -> generation."""
 
 from __future__ import annotations
 

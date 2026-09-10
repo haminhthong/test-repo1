@@ -13,21 +13,21 @@ TOKEN_PATTERN = re.compile(r"\w+", flags=re.UNICODE)
 
 
 def tokenize(text: str) -> list[str]:
-    """Tách văn bản thành danh sách từ (token) dạng chữ thường (case-folded).
+    """Tách văn bản thành danh sách từ (token) và chuyển về chữ thường.
 
-    Args:
+    Tham số:
         text (str): Chuỗi văn bản đầu vào.
 
-    Returns:
+    Kết quả trả về:
         List[str]: Danh sách các token thu được.
     """
     return TOKEN_PATTERN.findall(text.casefold())
 
 
 class BM25Index:
-    """Chỉ mục từ khóa BM25Okapi độc lập phục vụ tìm kiếm Lexical Top-N.
+    """Chỉ mục từ khóa BM25Okapi độc lập phục vụ tìm kiếm top-N.
 
-    Attributes:
+    Thuộc tính:
         tokenized_corpus (List[List[str]]): Danh sách các token của từng chunk trong corpus.
         bm25 (BM25Okapi): Thể hiện của thuật toán BM25Okapi.
     """
@@ -56,11 +56,11 @@ class BM25Index:
     def search(self, query: str, top_k: int = 30) -> list[tuple[int, float]]:
         """Tìm kiếm top_k đoạn văn bản khớp từ khóa BM25 tốt nhất cho câu hỏi.
 
-        Args:
+        Tham số:
             query (str): Câu hỏi của người dùng.
             top_k (int): Số lượng kết quả ứng viên cần lấy (mặc định: 30).
 
-        Returns:
+        Kết quả trả về:
             List[Tuple[int, float]]: Danh sách (vị trí chunk trong corpus, điểm BM25).
         """
         if top_k <= 0:
@@ -106,12 +106,12 @@ def reciprocal_rank_fusion(
     - Không bị ảnh hưởng bởi thang đo điểm số khác biệt giữa Cosine [-1, 1] và BM25 [0, inf).
     - Cân bằng tự nhiên giữa tín hiệu ngữ nghĩa (Dense) và từ khóa chính xác (BM25).
 
-    Args:
+    Tham số:
         dense_ranks (Dict[Any, int]): Ánh xạ candidate ID -> thứ hạng Dense (1-indexed).
         bm25_ranks (Dict[Any, int]): Ánh xạ candidate ID -> thứ hạng BM25 (1-indexed).
         k (int): Hằng số RRF làm mượt (mặc định: 60).
 
-    Returns:
+    Kết quả trả về:
         Dict[Any, float]: Ánh xạ candidate ID -> điểm RRF đã tính toán.
     """
     if k <= 0:
@@ -137,7 +137,7 @@ class CrossEncoderReranker:
     """Mô hình xếp hạng lại sâu (Cross-Encoder Reranker) chấm điểm cặp (query, chunk).
 
     Nhận vào Top Candidates từ RRF và tính điểm liên quan ngữ nghĩa chi tiết ở cấp độ token tương tác chéo.
-    Tích hợp cơ chế Fallback nếu không có GPU/tải mô hình thất bại.
+    Có cơ chế dự phòng khi không có GPU hoặc tải mô hình thất bại.
     """
 
     def __init__(
@@ -188,12 +188,12 @@ class CrossEncoderReranker:
     ) -> list[dict[str, Any]]:
         """Xếp hạng lại danh sách ứng viên và trả về top_k tốt nhất kèm điểm rerank.
 
-        Args:
+        Tham số:
             query (str): Câu hỏi của người dùng.
             candidates (List[Dict[str, Any]]): Danh sách các chunk ứng viên đã qua RRF.
             top_k (int): Số lượng kết quả giữ lại (mặc định: 5).
 
-        Returns:
+        Kết quả trả về:
             List[Dict[str, Any]]: Danh sách top_k chunk đã được xếp hạng lại theo evidence_score giảm dần.
         """
         if not candidates:
@@ -206,8 +206,8 @@ class CrossEncoderReranker:
                 pairs = [(query, str(cand.get("text", ""))) for cand in candidates]
                 raw_scores = model.predict(pairs)
 
-                # Giữ raw logit. Sigmoid không biến điểm thành xác suất đã
-                # calibrate và làm sai semantics của evidence threshold.
+                # Giữ logit thô. Sigmoid không biến điểm thành xác suất đã
+                # hiệu chỉnh và sẽ làm sai ý nghĩa của evidence threshold.
                 for cand, raw_score in zip(candidates, raw_scores, strict=True):
                     sc = round(float(raw_score), 4)
                     cand["reranker_score"] = sc
@@ -221,8 +221,8 @@ class CrossEncoderReranker:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Lỗi trong quá trình suy luận Cross-Encoder: %s", exc)
 
-        # Không tự tạo điểm neural giả. Giữ RRF để debug/baseline, còn service
-        # sẽ chuyển sang sources_only vì evidence gate cần raw logit của model.
+        # Không tự tạo điểm neural giả. Giữ RRF để kiểm tra/baseline, còn service
+        # sẽ chuyển sang sources_only vì evidence gate cần logit thô của model.
         for cand in candidates:
             rrf_sc = float(cand.get("rrf_score", 0.0))
             cand["reranker_score"] = None  # Không gán neural score giả

@@ -17,7 +17,7 @@ from src.catalog import load_catalog
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate Knowledge Catalog")
+    parser = argparse.ArgumentParser(description="Kiểm tra Knowledge Catalog")
     parser.add_argument("--catalog", default="configs/knowledge_catalog.yaml")
     parser.add_argument("--data-dir", default="data/raw")
     args = parser.parse_args()

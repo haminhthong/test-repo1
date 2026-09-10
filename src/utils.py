@@ -1,8 +1,4 @@
-"""Các tiện ích bổ trợ cho dự án RAG Knowledge Assistant.
-
-Tệp này cung cấp các hàm hỗ trợ về ghi log (logging), khởi tạo seed ngẫu nhiên
-để đảm bảo tính tái lập (reproducibility), đọc/lưu dữ liệu JSON và tính mã checksum (hash) tệp.
-"""
+"""Các tiện ích ghi log, đọc/lưu JSON và tính checksum cho dự án RAG."""
 
 from __future__ import annotations
 
@@ -10,7 +6,6 @@ import hashlib
 import json
 import logging
 import os
-import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,11 +15,11 @@ LOGGER = logging.getLogger("rag_knowledge_assistant")
 
 
 def setup_logging(level_name: str | None = None) -> None:
-    """Cấu hình định dạng và cấp độ hiển thị log cho hệ thống, tự động bật UTF-8 trên Windows.
+    """Cấu hình định dạng và cấp độ log, đồng thời bật UTF-8 trên Windows.
 
-    Args:
-        level_name (Optional[str]): Cấp độ log (DEBUG, INFO, WARNING, ERROR).
-            Nếu Không truyền, lấy từ biến môi trường LOG_LEVEL (mặc định INFO).
+    Tham số:
+        level_name (str | None): Cấp độ log (DEBUG, INFO, WARNING, ERROR).
+            Nếu bỏ trống, lấy từ biến môi trường LOG_LEVEL (mặc định INFO).
     """
     # Tự động cấu hình sys.stdout và sys.stderr về UTF-8 trên Windows console
     if hasattr(sys.stdout, "reconfigure"):
@@ -44,38 +39,12 @@ def setup_logging(level_name: str | None = None) -> None:
     )
 
 
-def set_seed(seed: int = 42) -> None:
-    """Khởi tạo seed ngẫu nhiên cho tất cả các thư viện liên quan để tái lập kết quả.
-
-    Args:
-        seed (int): Giá trị seed (mặc định: 42).
-    """
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-
-    try:
-        import numpy as np
-
-        np.random.seed(seed)
-    except ImportError:
-        LOGGER.debug("NumPy chưa được cài đặt, bỏ qua np.random.seed")
-
-    try:
-        import torch
-
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-    except ImportError:
-        LOGGER.debug("PyTorch chưa được cài đặt, bỏ qua torch.manual_seed")
-
-
 def save_json(path: str | Path, payload: Any) -> None:
-    """Lưu dữ liệu dưới dạng tệp JSON với định dạng Unicode UTF-8 chuẩn.
+    """Lưu dữ liệu dưới dạng tệp JSON bằng Unicode UTF-8.
 
-    Args:
-        path (Union[str, Path]): Đường dẫn tệp cần lưu.
-        payload (Any): Dữ liệu Python (dict, list) cần ghi.
+    Tham số:
+        path (str hoặc Path): Đường dẫn tệp cần lưu.
+        payload (Any): Dữ liệu Python cần ghi.
     """
     file_path = Path(path)
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,13 +57,13 @@ def save_json(path: str | Path, payload: Any) -> None:
 def load_json(path: str | Path) -> Any:
     """Đọc và giải mã dữ liệu từ tệp JSON.
 
-    Args:
-        path (Union[str, Path]): Đường dẫn tệp JSON.
+    Tham số:
+        path (str hoặc Path): Đường dẫn tệp JSON.
 
-    Returns:
+    Kết quả trả về:
         Any: Dữ liệu cấu trúc thu được từ tệp JSON.
 
-    Raises:
+    Ngoại lệ:
         FileNotFoundError: Nếu tệp không tồn tại.
     """
     file_path = Path(path)
@@ -106,11 +75,11 @@ def load_json(path: str | Path) -> Any:
 def compute_file_checksum(file_path: str | Path) -> str:
     """Tính mã băm MD5 để nhận diện thay đổi, không dùng cho mục đích bảo mật.
 
-    Args:
-        file_path (Union[str, Path]): Đường dẫn tới tệp tài liệu.
+    Tham số:
+        file_path (str hoặc Path): Đường dẫn tới tệp tài liệu.
 
-    Returns:
-        str: Chuỗi mã băm Hexadecimal MD5 của tệp.
+    Kết quả trả về:
+        str: Chuỗi mã băm MD5 dạng thập lục phân của tệp.
     """
     hasher = hashlib.md5(usedforsecurity=False)
     path = Path(file_path)

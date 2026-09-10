@@ -81,7 +81,7 @@ class Retriever:
         self.groups = {directory.name: _load_group(directory) for directory in group_dirs}
 
         # Một chunk có thể xuất hiện ở nhiều group; chỉ giữ một bản trong thuộc tính
-        # tiện ích để debug/evaluation, còn retrieval hợp nhất theo chunk_id.
+        # tiện ích để kiểm tra và đánh giá, còn retrieval hợp nhất theo chunk_id.
         chunks_by_id: dict[str, dict[str, Any]] = {}
         for bundle in self.groups.values():
             for chunk in bundle["chunks"]:
@@ -111,7 +111,7 @@ class Retriever:
 
     @staticmethod
     def _authorized(chunk: dict[str, Any], groups: tuple[str, ...]) -> bool:
-        """Deny-by-default nếu chunk thiếu ACL hoặc không giao quyền."""
+        """Mặc định từ chối nếu chunk thiếu ACL hoặc không giao quyền."""
         allowed = {
             str(group).strip().lower()
             for group in (chunk.get("allowed_groups") or [])
@@ -177,8 +177,8 @@ class Retriever:
     ) -> list[dict[str, Any]]:
         """ACL -> Dense/BM25 -> RRF -> Cross-Encoder.
 
-        ``use_dense=False`` hoặc ``use_bm25=False`` chỉ phục vụ baseline
-        evaluation. Pipeline online luôn dùng cả hai nhánh.
+        ``use_dense=False`` hoặc ``use_bm25=False`` chỉ phục vụ đánh giá
+        baseline. Pipeline trực tuyến luôn dùng cả hai nhánh.
         """
         clean_query = normalize_query(query)
         if not clean_query or k <= 0 or not (use_dense or use_bm25):

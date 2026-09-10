@@ -103,12 +103,3 @@ def read_document_blocks(path: Path) -> list[DocumentBlock]:
             return []
 
     raise ValueError(f"Định dạng không hỗ trợ: {suffix!r}.")
-
-
-def read_text(path: Path) -> list[tuple[str, int | None]]:
-    """Trả về nội dung tài liệu cùng page metadata nếu parser có thể cung cấp."""
-    blocks = read_document_blocks(path)
-    if path.suffix.lower() == ".pdf":
-        return [(block.text, block.page) for block in blocks]
-    text = "\n".join(block.text for block in blocks if block.text.strip())
-    return [(text, None)] if text else []

@@ -42,7 +42,7 @@ def test_bm25_index_corpus_search():
     # Tìm kiếm từ khóa chính xác "VAT"
     hits_vat = bm25.search("hóa đơn VAT", top_k=2)
     assert len(hits_vat) > 0
-    assert hits_vat[0][0] == 2  # Doc index 2 phải đứng đầu
+    assert hits_vat[0][0] == 2  # Chỉ mục tài liệu 2 phải đứng đầu
 
     # Tìm kiếm "2FA"
     hits_2fa = bm25.search("xác thực 2FA", top_k=2)
@@ -144,7 +144,7 @@ def test_ndcg_uses_requested_k_for_ideal_gain():
 
 def test_document_relevance_not_counted_twice():
     """Đảm bảo tài liệu trùng lặp trong top-k không bị cộng dồn relevance làm sai lệch DCG."""
-    # Nếu không deduplicate, 3 chunk cùng tài liệu đúng sẽ cộng 1 + 1/log2(3) + 1/log2(4) > 2
+    # Nếu không loại trùng, ba chunk cùng tài liệu đúng sẽ cộng 1 + 1/log2(3) + 1/log2(4) > 2
     # Với IDCG = 1, nếu tính sai nDCG sẽ > 2.
     metrics = calculate_retrieval_metrics(
         [["doc1.txt", "doc1.txt", "doc1.txt"]],
@@ -183,7 +183,7 @@ def test_evidence_gate_threshold_selected_on_dev_only():
 
 
 def test_evidence_gate_tuning_preserves_raw_logit_scale():
-    """Threshold Dev phải theo raw logit, không bị khóa trong khoảng [0, 1]."""
+    """Ngưỡng Dev phải theo logit thô, không bị khóa trong khoảng [0, 1]."""
 
     class RawLogitRetriever:
         evidence_gate_threshold = 1.72
@@ -205,7 +205,7 @@ def test_evidence_gate_tuning_preserves_raw_logit_scale():
 
 
 def test_evaluation_keeps_negative_reranker_logits() -> None:
-    """Benchmark không được loại ứng viên chỉ vì raw logit nhỏ hơn 0."""
+    """Benchmark không được loại ứng viên chỉ vì logit thô nhỏ hơn 0."""
 
     class FakeReranker:
         mode = "neural"

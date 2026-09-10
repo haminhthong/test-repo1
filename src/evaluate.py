@@ -1,12 +1,8 @@
-"""Đánh giá độc lập toàn diện hệ thống RAG đa tầng (Multi-Layer Benchmark Evaluation).
+"""Đánh giá retrieval, evidence gate và citation của hệ thống RAG.
 
-Hỗ trợ đánh giá 3 tầng chất lượng:
-1. Tầng 1 (Retrieval Quality): Document Recall@K, Evidence Recall@K, MRR@K, nDCG@K (chuẩn [0.0, 1.0]),
-   Hit@1, Latency p50/p95. Phân rã theo từng lát cắt dữ liệu (Slices: factual, paraphrase, keyword_code, numeric, no_answer).
-2. Tầng 2 (Evidence Gate & Answerability): Tỷ lệ từ chối đúng khi thiếu bằng chứng (True Abstention Rate),
-   False Answer Rate, Tối ưu ngưỡng Evidence Gate tự động trên tập Dev.
-3. Tầng 3 (Grounded Generation & Citation): Top Evidence Reference Token Coverage,
-   Citation Reference Validity (kiểm định cú pháp [C1], [C2] và trích xuất căn thực).
+Bộ đánh giá đo Recall@K, MRR, nDCG, độ trễ, khả năng từ chối câu hỏi thiếu
+bằng chứng và tính hợp lệ của citation. Ngưỡng evidence chỉ được chọn trên
+tập Dev; tập Test chỉ dùng để báo cáo kết quả cuối.
 """
 
 from __future__ import annotations
@@ -59,13 +55,13 @@ class BenchmarkCase:
 def load_benchmark(path: str | Path = DEFAULT_BENCHMARK_PATH) -> list[BenchmarkCase]:
     """Đọc và xác thực benchmark từ JSON để tránh hard-code trong mã nguồn.
 
-    Args:
+    Tham số:
         path (Union[str, Path]): Đường dẫn tệp JSON benchmark.
 
-    Returns:
+    Kết quả trả về:
         List[BenchmarkCase]: Danh sách các trường hợp kiểm thử đã qua xác thực.
 
-    Raises:
+    Ngoại lệ:
         ValueError: Nếu định dạng ca kiểm thử không hợp lệ hoặc rỗng.
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -156,10 +152,10 @@ def calculate_retrieval_metrics(
     deduplicate: bool = True,
     k: int | None = None,
 ) -> dict[str, float | int]:
-    """Tính Recall@k, Hit@1, MRR, nDCG@k và phân vị latency theo chuẩn toán học [0.0, 1.0].
+    """Tính Recall@k, Hit@1, MRR, nDCG@k và các phân vị độ trễ.
 
-    Giải quyết triệt để lỗi nDCG > 1:
-    1. Khi đánh giá Document Retrieval, deduplicate tài liệu nguồn trước để tránh việc
+    Hàm bảo đảm nDCG nằm trong [0.0, 1.0] bằng cách:
+    1. Khi đánh giá retrieval cấp tài liệu, loại trùng nguồn trước để tránh việc
        nhiều chunk từ cùng một tài liệu liên tục cộng dồn relevance làm DCG > IDCG.
     2. Tính IDCG chuẩn xác theo số lượng tài liệu liên quan thực tế:
        ideal_k = min(len(expected), effective_k)
@@ -263,7 +259,7 @@ def evaluate_evidence_retrieval(
 
     for hits, case in zip(retrieved_chunks, ans_cases, strict=True):
         if not case.expected_evidence and not case.expected_sections:
-            # Fallback sang document level nếu case chưa khai báo evidence chi tiết
+            # Nếu chưa có evidence chi tiết thì đối chiếu ở cấp tài liệu.
             doc_set = set(case.expected_documents or case.expected_sources)
             match_rank = next(
                 (pos for pos, h in enumerate(hits, start=1) if h.get("source") in doc_set),
@@ -355,13 +351,13 @@ def evaluate_retrieval_comprehensive(
     use_bm25: bool = True,
     access_context: AccessContext = BENCHMARK_ACCESS,
 ) -> dict[str, Any]:
-    """Đánh giá toàn diện Retrieval chất lượng đa tầng theo từng category slice."""
+    """Đánh giá toàn diện retrieval theo từng lát cắt danh mục."""
     ranked_sources: list[list[str]] = []
     expected_sources: list[set[str]] = []
     latencies: list[float] = []
     retrieved_chunks_all: list[list[dict[str, Any]]] = []
 
-    # Thống kê theo danh mục (Slice)
+    # Thống kê theo từng lát cắt danh mục.
     category_cases: dict[str, list[BenchmarkCase]] = {}
     category_ranked: dict[str, list[list[str]]] = {}
     category_expected: dict[str, list[set[str]]] = {}
@@ -387,7 +383,7 @@ def evaluate_retrieval_comprehensive(
             use_bm25=use_bm25,
             use_reranker=use_reranker,
             access_context=access_context,
-            # Không lọc theo score khi đo retrieval; raw logit có thể âm.
+            # Không lọc theo điểm khi đo retrieval; logit thô có thể âm.
             min_score=float("-inf"),
         )
         elapsed = time.perf_counter() - started
@@ -398,7 +394,7 @@ def evaluate_retrieval_comprehensive(
         if case.is_answerable:
             retrieved_chunks_all.append(results)
 
-        # Tập expected sources (bỏ qua 'ABSTAIN' trong so sánh tài liệu thật)
+        # Tập tài liệu kỳ vọng; bỏ qua 'ABSTAIN' khi so sánh tài liệu thật.
         exp_docs = set(case.expected_documents)
         expected_sources.append(exp_docs)
 
@@ -414,7 +410,7 @@ def evaluate_retrieval_comprehensive(
         category_expected[cat].append(exp_docs)
         category_latencies[cat].append(elapsed)
 
-        # Đánh giá Grounding / Abstention
+        # Đánh giá độ bám nguồn và khả năng từ chối.
         gate_all_failed = (
             not results
             or not gate_available
@@ -431,7 +427,7 @@ def evaluate_retrieval_comprehensive(
             else:
                 false_answers += 1
         else:
-            # Top Evidence Reference Token Coverage
+            # Độ phủ token của bằng chứng đứng đầu.
             if results and case.reference_answer:
                 ref_tokens = set(tokenize(case.reference_answer))
                 top_text_tokens = set(tokenize(results[0].get("text", "")))
@@ -452,7 +448,7 @@ def evaluate_retrieval_comprehensive(
     )
     evidence_metrics = evaluate_evidence_retrieval(retrieved_chunks_all, cases)
 
-    # Đánh giá từng Category Slice
+    # Đánh giá từng lát cắt danh mục.
     slice_metrics: dict[str, Any] = {}
     for cat, cat_cases in category_cases.items():
         cat_ans_ranked = [
@@ -492,7 +488,6 @@ def evaluate_retrieval_comprehensive(
         "false_answer_rate": false_answer_rate,
         "unanswerable_evaluated": total_unanswerable,
         "top_evidence_token_coverage": avg_keyword_coverage,
-        "avg_keyword_coverage": avg_keyword_coverage,  # Bí danh tương thích ngược
         "slices": slice_metrics,
     }
 
@@ -507,16 +502,17 @@ def tune_evidence_gate_threshold(
 ) -> float:
     """Tối ưu ngưỡng Evidence Gate tự động CHỈ trên tập Dev (không rò rỉ dữ liệu Test).
 
-    Mục tiêu: Maximize Answerable Recall subject to False Answer Rate <= target_false_answer_rate.
+    Mục tiêu: tối đa hóa Recall của câu hỏi trả lời được với False Answer Rate
+    không vượt quá target_false_answer_rate.
 
-    Args:
+    Tham số:
         dev_cases: Danh sách ca kiểm thử trên split='dev'.
         retriever: Thể hiện Retriever đang đánh giá.
         target_false_answer_rate: Ngưỡng tối đa chấp nhận việc trả lời nhầm trên câu unanswerable.
         top_k: Số lượng chunk ứng viên.
         use_reranker: Cờ reranker.
 
-    Returns:
+    Kết quả trả về:
         float: Ngưỡng điểm evidence_score được chọn.
     """
     if not 0.0 <= target_false_answer_rate <= 1.0:
@@ -572,7 +568,7 @@ def tune_evidence_gate_threshold(
     feasible_found = False
 
     # Chỉ thử tại các score quan sát được và ngay phía trên score đó. Cách này
-    # giữ đúng thang raw logit, không ép score về khoảng xác suất [0, 1].
+    # giữ đúng thang logit thô, không ép điểm về khoảng xác suất [0, 1].
     observed_scores = sorted(
         {score for score in unans_scores + ans_scores + [best_threshold] if math.isfinite(score)}
     )
@@ -597,7 +593,7 @@ def tune_evidence_gate_threshold(
                 best_threshold = tau
                 min_false_rate = far
         elif not feasible_found and far < min_false_rate:
-            # Nếu không có ngưỡng đạt target, chọn ngưỡng có FAR thấp nhất.
+            # Nếu không có ngưỡng đạt mục tiêu, chọn ngưỡng có FAR thấp nhất.
             best_threshold = tau
             min_false_rate = far
 
@@ -619,7 +615,7 @@ def run_evaluation(
     output_report_path: str | Path | None = None,
     top_k: int = 4,
 ) -> dict[str, Any]:
-    """Tune/so sánh trên Dev, sau đó chạy canonical đúng một lần trên Test."""
+    """Chọn ngưỡng và so sánh trên Dev, sau đó chạy pipeline chuẩn trên Test."""
     setup_logging()
     from .retrieval import Retriever
 

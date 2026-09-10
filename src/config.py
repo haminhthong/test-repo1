@@ -11,21 +11,21 @@ DEFAULT_EVIDENCE_GATE_THRESHOLD = 1.72
 
 @dataclass(frozen=True)
 class IndexConfig:
-    """Cấu hình ingest, catalog và truy xuất.
+    """Cấu hình nạp tài liệu, catalog và truy xuất.
 
-    Attributes:
+    Thuộc tính:
         data_dir (str): Thư mục chứa dữ liệu tài liệu đầu vào (TXT, MD, PDF, DOCX).
-        model_dir (str): Thư mục artifact hiện hành được retriever đọc trực tiếp.
+        model_dir (str): Thư mục artifact hiện hành được bộ truy xuất đọc trực tiếp.
         catalog_path (str): Catalog là nguồn sự thật về version, ngày hiệu lực và ACL.
         chunk_words (int): Số lượng từ mục tiêu trong một chunk tài liệu.
         overlap_words (int): Số lượng từ gối đầu (overlap) giữa 2 chunk liền kề.
         strategy (str): Chiến lược chunking ("structure_aware" hoặc "sliding_window").
-        embedding_model (str): Tên mô hình SentenceTransformers để vectorize.
-        reranker_model (str): Tên mô hình multilingual reranker đã benchmark.
+        embedding_model (str): Tên mô hình SentenceTransformers dùng để tạo vector.
+        reranker_model (str): Tên mô hình reranker đa ngôn ngữ đã được đánh giá.
         candidate_pool_k (int): Số ứng viên lấy từ mỗi nhánh Dense/BM25.
         rrf_k (int): Hằng số điều chỉnh Reciprocal Rank Fusion.
         rerank_top_k (int): Số ứng viên giữ lại sau reranking.
-        evidence_gate_threshold (float): Ngưỡng raw logit mặc định, cần calibrate trên Dev.
+        evidence_gate_threshold (float): Ngưỡng logit thô mặc định, cần hiệu chỉnh trên Dev.
     """
 
     data_dir: str = "data/raw"
@@ -45,7 +45,7 @@ class IndexConfig:
     def validate(self) -> None:
         """Xác thực tính hợp lệ của thông số cấu hình.
 
-        Raises:
+        Ngoại lệ:
             ValueError: Nếu các tham số vi phạm ràng buộc kỹ thuật.
         """
         if self.chunk_words <= 0:
@@ -73,7 +73,7 @@ class IndexConfig:
 def parse_args() -> IndexConfig:
     """Trích xuất tham số từ dòng lệnh (CLI) để khởi tạo IndexConfig.
 
-    Returns:
+    Kết quả trả về:
         IndexConfig: Đối tượng cấu hình đã qua xác thực.
     """
     parser = argparse.ArgumentParser(

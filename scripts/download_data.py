@@ -25,7 +25,7 @@ LOGGER = logging.getLogger("download_data")
 
 SAMPLES: dict[str, str] = {
     # --------------------------------------------------------------------------
-    # KHỐI NHÂN SỰ (HR POLICIES)
+    # KHỐI NHÂN SỰ (CHÍNH SÁCH NHÂN SỰ)
     # --------------------------------------------------------------------------
     "policy_leave.txt": (
         "CHÍNH SÁCH NGHỈ PHÉP NỘI BỘ DOANH NGHIỆP\n\n"
@@ -82,7 +82,7 @@ SAMPLES: dict[str, str] = {
         "Kết quả đánh giá Đạt sẽ kích hoạt ký hợp đồng lao động chính thức thời hạn 1 năm."
     ),
     # --------------------------------------------------------------------------
-    # KHỐI TÀI CHÍNH & KẾ TOÁN (FINANCE & EXPENSE POLICIES)
+    # KHỐI TÀI CHÍNH & KẾ TOÁN (CHÍNH SÁCH TÀI CHÍNH)
     # --------------------------------------------------------------------------
     "expense_policy.txt": (
         "CHÍNH SÁCH VÀ QUY TRÌNH HOÀN ỨNG CHI PHÍ CÔNG TÁC\n\n"
@@ -137,7 +137,7 @@ SAMPLES: dict[str, str] = {
         "Kế toán chỉ chấp nhận file định dạng hóa đơn điện tử gốc kèm file XML nén tra cứu hợp lệ từ Tổng cục Thuế."
     ),
     # --------------------------------------------------------------------------
-    # KHỐI BẢO MẬT & CNTT (SECURITY & IT POLICIES)
+    # KHỐI BẢO MẬT & CNTT (CHÍNH SÁCH BẢO MẬT VÀ CNTT)
     # --------------------------------------------------------------------------
     "security_guide.txt": (
         "HƯỚNG DẪN BẢO MẬT AN THÔNG TIN\n\n"

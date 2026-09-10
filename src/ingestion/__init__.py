@@ -10,7 +10,7 @@ from ..catalog import CatalogEntry, active_catalog
 from ..utils import compute_file_checksum
 from .chunking import chunk_text, structure_aware_chunk, validate_chunk_quality_contract
 from .models import Chunk, DocumentBlock
-from .parsers import SUPPORTED_SUFFIXES, check_document_quality, read_document_blocks, read_text
+from .parsers import SUPPORTED_SUFFIXES, check_document_quality, read_document_blocks
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.ingestion")
 
@@ -22,7 +22,6 @@ __all__ = [
     "chunk_text",
     "ingest_folder",
     "read_document_blocks",
-    "read_text",
     "structure_aware_chunk",
     "validate_chunk_quality_contract",
 ]
@@ -38,14 +37,14 @@ def ingest_folder(
 ) -> list[Chunk]:
     """Index chỉ các file ACTIVE trong catalog tại ngày build.
 
-    Catalog là bắt buộc trong pipeline canonical để document identity, version
+    Catalog là bắt buộc trong pipeline chuẩn để document identity, version
     và ACL không bị suy luận từ đường dẫn hoặc nội dung tài liệu.
     """
     data_path = Path(folder)
     if not data_path.is_dir():
         raise FileNotFoundError(f"Không tìm thấy thư mục dữ liệu: {data_path.resolve()}")
     if catalog is None:
-        raise ValueError("Catalog bắt buộc cho canonical ingestion pipeline.")
+        raise ValueError("Catalog bắt buộc cho pipeline nạp tài liệu chuẩn.")
 
     entries = {entry.file: entry for entry in active_catalog(catalog, as_of=as_of)}
     chunks: list[Chunk] = []

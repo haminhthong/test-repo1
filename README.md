@@ -77,8 +77,8 @@ flowchart TD
 `scripts/build_index.py` đọc catalog, lọc tài liệu active theo `date.today()`,
 chạy Document QA, chunk theo cấu trúc, encode chunk rồi ghi artifact hiện hành.
 Mỗi ACL group có `index.faiss`, `chunks.json` và `bm25_index.json`.
-`documents.json` giữ metadata tối thiểu của tài liệu đã index. Không có active
-pointer, release directory, atomic promotion hoặc manifest chain.
+`documents.json` giữ metadata tối thiểu của tài liệu đã index. Muốn cập nhật
+artifact, chạy lại lệnh build từ corpus và catalog hiện hành.
 
 ### Luồng online
 

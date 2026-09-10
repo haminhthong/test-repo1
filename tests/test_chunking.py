@@ -85,7 +85,7 @@ def test_structure_aware_chunking_extracts_sections():
     assert any("Quyền lợi nghỉ phép" in (s or "") for s in sections)
     assert any("Quy trình đăng ký" in (s or "") for s in sections)
 
-    # ID luôn chứa document, version, section hash và thứ tự chunk.
+    # ID luôn chứa tài liệu, version, mã băm section và thứ tự chunk.
     for idx, c in enumerate(chunks):
         assert c.chunk_id.startswith("leave-policy:v2026:")
         assert c.chunk_id.endswith(f":c{idx:03d}")

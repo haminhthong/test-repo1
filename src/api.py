@@ -42,7 +42,7 @@ _rag_service: RAGService | None = None
 
 
 class QueryIn(BaseModel):
-    """Payload canonical: client chỉ gửi câu hỏi."""
+    """Payload chuẩn: client chỉ gửi câu hỏi."""
 
     model_config = ConfigDict(extra="forbid")
     question: str = Field(

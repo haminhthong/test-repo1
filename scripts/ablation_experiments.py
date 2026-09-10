@@ -47,7 +47,7 @@ def _retrieval_rows(
             use_bm25=use_bm25,
             use_reranker=use_reranker,
             access_context=DEV_ACCESS,
-            # Giữ cả raw logit âm để không làm sai thứ hạng baseline.
+            # Giữ cả logit thô âm để không làm sai thứ hạng baseline.
             min_score=float("-inf"),
         )
         latencies.append(time.perf_counter() - started)

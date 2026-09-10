@@ -227,7 +227,7 @@ def chunk_text(
     department: str = "",
     allowed_groups: list[str] | tuple[str, ...] | None = None,
 ) -> list[Chunk]:
-    """Chia tài liệu theo strategy; structure-aware là đường canonical."""
+    """Chia tài liệu theo strategy; structure-aware là cấu hình chuẩn."""
     if chunk_words <= 0:
         raise ValueError("chunk_words phải lớn hơn 0.")
     if not 0 <= overlap_words < chunk_words:

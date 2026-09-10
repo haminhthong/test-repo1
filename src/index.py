@@ -133,11 +133,10 @@ def _document_records(
 
 
 def build_index(config: IndexConfig | None = None) -> dict[str, Any]:
-    """Full rebuild artifact từ tài liệu ACTIVE hiện tại.
+    """Xây dựng lại toàn bộ artifact từ tài liệu ACTIVE hiện tại.
 
-    Artifact luôn được ghi vào cùng một thư mục ``groups``. Không có active
-    pointer, release directory hay cơ chế promote; muốn cập nhật chỉ cần build
-    lại từ corpus hiện tại.
+    Artifact luôn được ghi vào thư mục ``artifacts`` hiện tại. Muốn cập nhật
+    chỉ cần build lại từ corpus và catalog hiện hành.
     """
     config = config or IndexConfig()
     config.validate()
@@ -241,7 +240,7 @@ def main() -> None:
         if reconfigure is not None:
             reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="Build Vietnamese Policy RAG artifacts")
+    parser = argparse.ArgumentParser(description="Xây dựng artifact cho Vietnamese Policy RAG")
     parser.add_argument("--data-dir", default="data/raw", help="Thư mục tài liệu gốc")
     parser.add_argument("--model-dir", default="artifacts", help="Thư mục artifact")
     parser.add_argument(
@@ -253,7 +252,7 @@ def main() -> None:
         "--strategy",
         choices=["structure_aware", "sliding_window"],
         default="structure_aware",
-        help="structure_aware là canonical; sliding_window chỉ dùng baseline",
+        help="structure_aware là cấu hình chuẩn; sliding_window chỉ dùng làm baseline",
     )
     parser.add_argument("--embedding-model", default=IndexConfig.embedding_model)
     parser.add_argument("--candidate-pool-k", type=int, default=30)
