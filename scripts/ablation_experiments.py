@@ -1,4 +1,4 @@
-"""Ablation chỉ chạy trên DEV; LOCKED TEST chỉ dùng cho final evaluation."""
+"""Ablation retrieval/chunking chỉ chạy trên tập dev."""
 
 from __future__ import annotations
 
@@ -28,7 +28,11 @@ DEV_ACCESS = AccessContext(
 
 
 def _retrieval_rows(
-    retriever: Retriever, cases: list[Any], dense_weight: float | None, use_reranker: bool
+    retriever: Retriever,
+    cases: list[Any],
+    use_dense: bool,
+    use_bm25: bool,
+    use_reranker: bool,
 ) -> dict[str, Any]:
     answerable = [case for case in cases if case.is_answerable]
     ranked: list[list[str]] = []
@@ -39,7 +43,8 @@ def _retrieval_rows(
         hits = retriever.search(
             case.question,
             k=4,
-            dense_weight=dense_weight,
+            use_dense=use_dense,
+            use_bm25=use_bm25,
             use_reranker=use_reranker,
             access_context=DEV_ACCESS,
             # Giữ cả raw logit âm để không làm sai thứ hạng baseline.
@@ -64,22 +69,32 @@ def run_rag_ablation(
 ) -> dict[str, Any]:
     """So sánh các pipeline đã định nghĩa trước trên DEV, không sweep Test."""
     configurations = [
-        {"name": "BM25 Only", "dense_weight": 0.0, "use_reranker": False},
-        {"name": "Dense Only", "dense_weight": 1.0, "use_reranker": False},
-        {"name": "Dense + BM25 + RRF", "dense_weight": None, "use_reranker": False},
-        {"name": "RRF + Multilingual Reranker", "dense_weight": None, "use_reranker": True},
+        {"name": "BM25 Only", "use_dense": False, "use_bm25": True, "use_reranker": False},
+        {"name": "Dense Only", "use_dense": True, "use_bm25": False, "use_reranker": False},
+        {
+            "name": "Dense + BM25 + RRF",
+            "use_dense": True,
+            "use_bm25": True,
+            "use_reranker": False,
+        },
+        {
+            "name": "RRF + Multilingual Reranker",
+            "use_dense": True,
+            "use_bm25": True,
+            "use_reranker": True,
+        },
     ]
     results = []
     for configuration in configurations:
         row = _retrieval_rows(
             retriever,
             dev_cases,
-            configuration["dense_weight"],
+            configuration["use_dense"],
+            configuration["use_bm25"],
             configuration["use_reranker"],
         )
         results.append({"pipeline": configuration["name"], **row})
     report = {
-        "schema_version": 3,
         "selection_split": "dev",
         "locked_test_accessed": False,
         "results": results,
@@ -111,14 +126,12 @@ def run_chunk_ablation(
             strategy=strategy,
             chunk_words=chunk_words,
             overlap_words=overlap_words,
-            use_reranker=False,
         )
         build_index(config)
         retriever = Retriever(model_dir=model_dir, use_reranker=False)
-        row = _retrieval_rows(retriever, dev_cases, None, False)
+        row = _retrieval_rows(retriever, dev_cases, True, True, False)
         results.append({"strategy": name, "total_chunks": len(retriever.chunks), **row})
     report = {
-        "schema_version": 3,
         "selection_split": "dev",
         "locked_test_accessed": False,
         "results": results,
@@ -134,11 +147,11 @@ def main() -> None:
         benchmark_path = PROJECT_ROOT / "data/evaluation/questions.json"
     cases = load_benchmark(benchmark_path)
     dev_cases = [case for case in cases if case.split == "dev"]
-    retriever = Retriever(model_dir=PROJECT_ROOT / "models/rag_index", use_reranker=True)
+    retriever = Retriever(model_dir=PROJECT_ROOT / "artifacts", use_reranker=True)
     run_rag_ablation(retriever, dev_cases, PROJECT_ROOT / "reports/rag_ablation.json")
     run_chunk_ablation(
         "data/raw",
-        PROJECT_ROOT / "models/ablation_scratch",
+        PROJECT_ROOT / "reports/ablation_scratch",
         dev_cases,
         PROJECT_ROOT / "reports/chunk_ablation.json",
     )

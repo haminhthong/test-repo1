@@ -1,13 +1,9 @@
-"""Knowledge Catalog: nguồn sự thật cho document governance.
-
-ACL, policy version và thời gian hiệu lực phải đến từ catalog đã được kiểm
-duyệt. Module này cố ý không suy luận quyền từ tên file.
-"""
+"""Document catalog cho identity, version, ngày hiệu lực và ACL."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -18,12 +14,12 @@ GROUP_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", flags=re.IGNORECASE)
 
 
 class CatalogError(ValueError):
-    """Lỗi hợp đồng catalog hoặc governance metadata."""
+    """Lỗi dữ liệu hoặc invariant của catalog."""
 
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """Metadata được phê duyệt cho một phiên bản tài liệu."""
+    """Metadata của một phiên bản tài liệu."""
 
     document_id: str
     policy_key: str
@@ -47,17 +43,6 @@ class CatalogEntry:
             and self.effective_from <= as_of
             and (self.effective_to is None or as_of < self.effective_to)
         )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Chuyển metadata sang JSON-serializable dictionary."""
-        data = asdict(self)
-        data["effective_from"] = self.effective_from.isoformat()
-        data["effective_to"] = (
-            self.effective_to.isoformat() if self.effective_to is not None else None
-        )
-        data["allowed_groups"] = list(self.allowed_groups)
-        data["policy_status"] = self.policy_status
-        return data
 
 
 def _parse_date(value: Any, field_name: str, index: int) -> date:
@@ -233,8 +218,3 @@ def active_catalog(entries: list[CatalogEntry], as_of: date | None = None) -> li
     """Lọc duy nhất các tài liệu ACTIVE và đang có hiệu lực."""
     effective_date = as_of or date.today()
     return [entry for entry in entries if entry.is_active(effective_date)]
-
-
-def catalog_snapshot(entries: list[CatalogEntry]) -> list[dict[str, Any]]:
-    """Tạo snapshot bất biến để audit cùng index release."""
-    return [entry.to_dict() for entry in sorted(entries, key=lambda item: item.document_id)]

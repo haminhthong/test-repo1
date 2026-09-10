@@ -1,4 +1,4 @@
-"""Kiểm thử các invariant P0 của Enterprise RAG V1."""
+"""Kiểm thử catalog, effective date và ACL server-side."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def test_catalog_rejects_absolute_posix_path(tmp_path) -> None:
 
 
 def test_catalog_rejects_unsafe_acl_group(tmp_path) -> None:
-    """Tên ACL không được trở thành đường dẫn shard ngoài release."""
+    """Tên ACL không được trở thành đường dẫn ngoài artifact group."""
     catalog = tmp_path / "catalog.yaml"
     catalog.write_text(
         "documents:\n"
@@ -87,9 +87,10 @@ def test_catalog_rejects_unsafe_acl_group(tmp_path) -> None:
         load_catalog(catalog)
 
 
-def test_query_body_does_not_create_access_groups() -> None:
-    payload = QueryIn(question="Câu hỏi hợp lệ", user_groups=["security"])
-    assert not hasattr(payload, "user_groups")
+def test_query_body_rejects_client_access_fields() -> None:
+    """Client không thể gửi groups hoặc tham số pipeline vào query body."""
+    with pytest.raises(ValueError):
+        QueryIn(question="Câu hỏi hợp lệ", user_groups=["security"])
 
 
 def test_api_key_mapping_is_server_side() -> None:

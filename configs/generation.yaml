@@ -1,6 +1,0 @@
-version: grounded-v1
-llm_provider: ollama
-citation_contract: factual_sentence_requires_valid_citation
-invalid_citation_action: evidence_only
-reranker_unavailable_action: evidence_only
-llm_unavailable_action: evidence_only

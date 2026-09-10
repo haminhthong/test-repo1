@@ -351,7 +351,8 @@ def evaluate_retrieval_comprehensive(
     *,
     top_k: int = 4,
     use_reranker: bool = True,
-    dense_weight: float | None = None,
+    use_dense: bool = True,
+    use_bm25: bool = True,
     access_context: AccessContext = BENCHMARK_ACCESS,
 ) -> dict[str, Any]:
     """Đánh giá toàn diện Retrieval chất lượng đa tầng theo từng category slice."""
@@ -382,7 +383,8 @@ def evaluate_retrieval_comprehensive(
         results = retriever.search(
             case.question,
             k=top_k,
-            dense_weight=dense_weight,
+            use_dense=use_dense,
+            use_bm25=use_bm25,
             use_reranker=use_reranker,
             access_context=access_context,
             # Không lọc theo score khi đo retrieval; raw logit có thể âm.
@@ -611,36 +613,6 @@ def tune_evidence_gate_threshold(
     return best_threshold
 
 
-def evaluate_configuration(
-    retriever: Retriever,
-    cases: list[BenchmarkCase],
-    *,
-    dense_weight: float,
-    top_k: int,
-) -> dict[str, float | int]:
-    """Đánh giá một cấu hình retrieval (tương thích ngược với interface cũ)."""
-    ans_cases = [c for c in cases if c.is_answerable]
-    ranked_sources: list[list[str]] = []
-    expected_sources: list[set[str]] = []
-    latencies: list[float] = []
-
-    for case in ans_cases:
-        started = time.perf_counter()
-        results = retriever.search(
-            case.question,
-            k=top_k,
-            dense_weight=dense_weight,
-            use_reranker=False,
-            access_context=BENCHMARK_ACCESS,
-            min_score=float("-inf"),
-        )
-        latencies.append(time.perf_counter() - started)
-        ranked_sources.append([str(item.get("source", "")) for item in results])
-        expected_sources.append(set(case.expected_documents or case.expected_sources))
-
-    return calculate_retrieval_metrics(ranked_sources, expected_sources, latencies, k=top_k)
-
-
 def run_evaluation(
     model_dir: str | Path | None = None,
     benchmark_path: str | Path = DEFAULT_BENCHMARK_PATH,
@@ -665,10 +637,10 @@ def run_evaluation(
 
     dev_pipelines = {
         "bm25_only": evaluate_retrieval_comprehensive(
-            retriever, dev_cases, top_k=top_k, dense_weight=0.0, use_reranker=False
+            retriever, dev_cases, top_k=top_k, use_dense=False, use_bm25=True, use_reranker=False
         ),
         "dense_only": evaluate_retrieval_comprehensive(
-            retriever, dev_cases, top_k=top_k, dense_weight=1.0, use_reranker=False
+            retriever, dev_cases, top_k=top_k, use_dense=True, use_bm25=False, use_reranker=False
         ),
         "hybrid_rrf": evaluate_retrieval_comprehensive(
             retriever, dev_cases, top_k=top_k, use_reranker=False
@@ -681,36 +653,32 @@ def run_evaluation(
         retriever, test_cases, top_k=top_k, use_reranker=True
     )
     policy = {
-        "version": "retrieval-v1",
-        "dense_k": int(retriever.config.get("dense_k", retriever.default_candidate_k)),
-        "sparse_k": int(retriever.config.get("sparse_k", retriever.default_candidate_k)),
+        "dense_k": int(retriever.config.get("candidate_pool_k", retriever.default_candidate_k)),
+        "sparse_k": int(retriever.config.get("candidate_pool_k", retriever.default_candidate_k)),
         "rrf_k": retriever.rrf_k,
-        "rerank_candidates": retriever.rerank_top_k,
+        "rerank_top_k": retriever.rerank_top_k,
         "context_k": top_k,
         "reranker_model": retriever.config.get("reranker_model"),
-        "generation_policy": "grounded-v1",
         "evidence_gate_threshold": calibrated_threshold,
         "evaluation_dataset": Path(benchmark_path).as_posix(),
     }
     dev_report = {
-        "schema_version": 3,
         "selection_split": "dev",
-        "evaluation_split": "locked_test",
-        "retrieval_policy": policy,
+        "evaluation_split": "test",
+        "retrieval_config": policy,
         "pipelines": dev_pipelines,
     }
     final_report = {
-        "schema_version": 3,
-        "system_name": "Vietnamese Enterprise Policy RAG",
+        "system_name": "Vietnamese Policy RAG",
         "selection_split": "dev",
-        "evaluation_split": "locked_test",
-        "locked_test_tuned": False,
+        "evaluation_split": "test",
+        "test_threshold_selected_on_dev": True,
         "total_test_cases": len(test_cases),
-        "retrieval_policy": policy,
-        "canonical_pipeline": "Dense + BM25 + RRF + Multilingual Reranker + Evidence Gate",
+        "retrieval_config": policy,
+        "canonical_pipeline": "Dense + BM25 + RRF + Cross-Encoder + Evidence Gate",
         "metrics": final_metrics,
         "limitations": [
-            "Benchmark được đọc từ file đã chọn; cần freeze dữ liệu trước khi so sánh release.",
+            "Benchmark được đọc từ file đã chọn; cần freeze dữ liệu trước khi so sánh các lần chạy.",
             "Runtime citation guard kiểm tra citation ID và sentence coverage, không tự chứng minh entailment.",
             "PDF scan/OCR và bảng PDF phức tạp chưa thuộc phạm vi V1.",
         ],

@@ -1,11 +1,11 @@
-"""Vietnamese Evidence-Grounded Knowledge Assistant — Hybrid RAG Platform.
+"""Vietnamese Policy RAG — Dense/BM25 retrieval có ACL và citation.
 
 Gói thư viện chính của dự án. Cung cấp:
 - Cấu hình hệ thống (`config`).
 - Pipeline nạp tài liệu & phân đoạn theo cấu trúc (`ingestion`).
-- Chỉ mục FAISS + BM25 (`index`, `ranking`).
-- Bộ truy xuất lai canonical (`retrieval`).
-- Bộ sinh câu trả lời căn thực & kiểm định trích dẫn (`generation`).
+- Artifact FAISS + BM25 (`index`, `ranking`).
+- Bộ truy xuất hybrid có ACL (`retrieval`).
+- Bộ sinh câu trả lời có citation (`generation`).
 - Dịch vụ REST API (`api`).
 - Đánh giá benchmark đa tầng (`evaluate`).
 """

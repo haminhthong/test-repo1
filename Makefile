@@ -13,8 +13,7 @@ index:
 	python scripts/build_index.py
 
 evaluate:
-	python scripts/evaluate_dev.py
-	python scripts/evaluate_final.py
+	python scripts/evaluate.py
 
 ablation:
 	python scripts/ablation_experiments.py

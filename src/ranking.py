@@ -1,19 +1,9 @@
-"""BM25, RRF và multilingual reranker cho hybrid retrieval.
-
-Tệp này thực hiện các thuật toán:
-1. Tách từ (Tokenization) tiếng Việt có dấu.
-2. Bộ chỉ mục từ khóa thực thụ (BM25 Index) dựa trên thuật toán Robertson BM25Okapi.
-3. Thuật toán dung hợp thứ hạng Reciprocal Rank Fusion (RRF).
-4. Mô hình xếp hạng lại sâu Cross-Encoder multilingual.
-5. Các hàm bổ trợ tương thích ngược; ``hybrid_score`` không dùng trong pipeline.
-"""
+"""BM25, RRF và multilingual Cross-Encoder cho hybrid retrieval."""
 
 from __future__ import annotations
 
 import logging
-import math
 import re
-from dataclasses import asdict, dataclass
 from typing import Any
 
 LOGGER = logging.getLogger("rag_knowledge_assistant.ranking")
@@ -34,112 +24,6 @@ def tokenize(text: str) -> list[str]:
     return TOKEN_PATTERN.findall(text.casefold())
 
 
-def get_token_set(text: str) -> set[str]:
-    """Tách văn bản và chuyển thành tập hợp các từ độc nhất.
-
-    Args:
-        text (str): Chuỗi văn bản đầu vào.
-
-    Returns:
-        Set[str]: Tập hợp các token độc nhất.
-    """
-    return set(tokenize(text))
-
-
-def lexical_overlap(query: str, document: str) -> float:
-    """Tính tỷ lệ trùng lặp từ khóa (Jaccard-like Overlap) giữa câu hỏi và văn bản.
-
-    Args:
-        query (str): Câu hỏi/truy vấn của người dùng.
-        document (str): Đoạn văn bản tài liệu.
-
-    Returns:
-        float: Giá trị trong khoảng [0.0, 1.0] thể hiện tỷ lệ token của query có trong document.
-    """
-    query_tokens = get_token_set(query)
-    if not query_tokens:
-        return 0.0
-    doc_tokens = get_token_set(document)
-    intersection = query_tokens & doc_tokens
-    return len(intersection) / len(query_tokens)
-
-
-def bm25_score_single(
-    query_tokens: list[str],
-    doc_tokens: list[str],
-    total_docs: int = 100,
-    doc_freqs: dict[str, int] | None = None,
-    avg_doc_len: float = 200.0,
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> float:
-    """Tính điểm BM25 cho một văn bản đối với danh sách token truy vấn.
-
-    Args:
-        query_tokens (List[str]): Danh sách các từ trong câu hỏi.
-        doc_tokens (List[str]): Danh sách các từ trong văn bản.
-        total_docs (int): Tổng số văn bản trong corpus.
-        doc_freqs (Dict[str, int], optional): Số văn bản chứa từng từ.
-        avg_doc_len (float): Độ dài trung bình của văn bản trong corpus.
-        k1 (float): Term Frequency saturation parameter.
-        b (float): Length Normalization parameter.
-
-    Returns:
-        float: Điểm số BM25 (chưa chuẩn hóa).
-    """
-    if not query_tokens or not doc_tokens:
-        return 0.0
-
-    doc_len = len(doc_tokens)
-    score = 0.0
-    doc_freqs = doc_freqs or {}
-
-    tf_map: dict[str, int] = {}
-    for term in doc_tokens:
-        tf_map[term] = tf_map.get(term, 0) + 1
-
-    for term in set(query_tokens):
-        if term not in tf_map:
-            continue
-
-        freq = tf_map[term]
-        df = doc_freqs.get(term, 1)
-        idf = math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
-        numerator = freq * (k1 + 1.0)
-        denominator = freq + k1 * (1.0 - b + b * (doc_len / max(1.0, avg_doc_len)))
-        score += idf * (numerator / denominator)
-
-    return max(0.0, score)
-
-
-def hybrid_score(
-    dense_score: float,
-    lexical_score: float,
-    dense_weight: float = 0.85,
-) -> float:
-    """Kết hợp điểm Dense Cosine Similarity và điểm Lexical Relevance thành điểm tổng hợp tuyến tính.
-
-    Công thức: Combine = dense_weight * Normal(dense_score) + (1 - dense_weight) * lexical_score
-
-    Args:
-        dense_score (float): Điểm tương đồng Cosine từ FAISS index [-1.0, 1.0].
-        lexical_score (float): Điểm trùng lặp từ khóa [0.0, 1.0].
-        dense_weight (float): Tỷ trọng dành cho Dense Retrieval (từ 0.0 đến 1.0, mặc định: 0.85).
-
-    Returns:
-        float: Điểm số tổng hợp chuẩn hóa trong khoảng [0.0, 1.0].
-
-    Raises:
-        ValueError: Nếu dense_weight không nằm trong khoảng [0.0, 1.0].
-    """
-    if not (0.0 <= dense_weight <= 1.0):
-        raise ValueError(f"dense_weight={dense_weight} phải nằm trong khoảng [0.0, 1.0]")
-
-    normalized_dense = min(max((dense_score + 1.0) / 2.0, 0.0), 1.0)
-    final_score = dense_weight * normalized_dense + (1.0 - dense_weight) * lexical_score
-    return round(final_score, 4)
-
-
 class BM25Index:
     """Chỉ mục từ khóa BM25Okapi độc lập phục vụ tìm kiếm Lexical Top-N.
 
@@ -156,27 +40,12 @@ class BM25Index:
             self._build()
 
     def _build(self) -> None:
-        """Xây dựng mô hình BM25Okapi và cache document frequency cho fallback nội bộ."""
+        """Xây dựng BM25Okapi; thiếu dependency là lỗi cấu hình rõ ràng."""
         try:
             from rank_bm25 import BM25Okapi
-
-            self._bm25_model = BM25Okapi(self.tokenized_corpus)
-        except ImportError:
-            LOGGER.warning("rank_bm25 chưa được cài đặt, sử dụng fallback BM25 nội bộ.")
-            self._bm25_model = None
-
-        # Cache document frequency & average doc length để tính IDF chính xác
-        # cho cả nhánh fallback nội bộ.
-        df: dict[str, int] = {}
-        total_len = 0
-        for tokens in self.tokenized_corpus:
-            total_len += len(tokens)
-            for term in set(tokens):
-                df[term] = df.get(term, 0) + 1
-        self._doc_freqs: dict[str, int] = df
-        self._avg_doc_len: float = (
-            total_len / len(self.tokenized_corpus) if self.tokenized_corpus else 0.0
-        )
+        except ImportError as exc:
+            raise RuntimeError("Cần cài rank-bm25 để sử dụng BM25 retrieval.") from exc
+        self._bm25_model = BM25Okapi(self.tokenized_corpus)
 
     @classmethod
     def from_texts(cls, texts: list[str]) -> BM25Index:
@@ -200,21 +69,7 @@ class BM25Index:
         if not query_tokens or not self.tokenized_corpus:
             return []
 
-        if self._bm25_model is not None:
-            scores = self._bm25_model.get_scores(query_tokens)
-        else:
-            # Fallback nếu không có rank_bm25: dùng bm25_score_single với
-            # total_docs và doc_freqs lấy từ corpus đã cache.
-            scores = [
-                bm25_score_single(
-                    query_tokens,
-                    doc_tokens,
-                    total_docs=len(self.tokenized_corpus),
-                    doc_freqs=self._doc_freqs,
-                    avg_doc_len=self._avg_doc_len,
-                )
-                for doc_tokens in self.tokenized_corpus
-            ]
+        scores = self._bm25_model.get_scores(query_tokens)
 
         # Sắp xếp và lấy top-k có điểm > 0
         scored_pairs = [(idx, float(score)) for idx, score in enumerate(scores) if score > 0.0]
@@ -237,10 +92,10 @@ class BM25Index:
 
 
 def reciprocal_rank_fusion(
-    dense_ranks: dict[int, int],
-    bm25_ranks: dict[int, int],
+    dense_ranks: dict[Any, int],
+    bm25_ranks: dict[Any, int],
     k: int = 60,
-) -> dict[int, float]:
+) -> dict[Any, float]:
     """Dung hợp thứ hạng ứng viên từ Dense và BM25 bằng Reciprocal Rank Fusion (RRF).
 
     Công thức:
@@ -252,12 +107,12 @@ def reciprocal_rank_fusion(
     - Cân bằng tự nhiên giữa tín hiệu ngữ nghĩa (Dense) và từ khóa chính xác (BM25).
 
     Args:
-        dense_ranks (Dict[int, int]): Ánh xạ chunk_idx -> thứ hạng từ Dense Search (1-indexed).
-        bm25_ranks (Dict[int, int]): Ánh xạ chunk_idx -> thứ hạng từ BM25 Search (1-indexed).
+        dense_ranks (Dict[Any, int]): Ánh xạ candidate ID -> thứ hạng Dense (1-indexed).
+        bm25_ranks (Dict[Any, int]): Ánh xạ candidate ID -> thứ hạng BM25 (1-indexed).
         k (int): Hằng số RRF làm mượt (mặc định: 60).
 
     Returns:
-        Dict[int, float]: Ánh xạ chunk_idx -> điểm RRF đã tính toán.
+        Dict[Any, float]: Ánh xạ candidate ID -> điểm RRF đã tính toán.
     """
     if k <= 0:
         raise ValueError("RRF k phải lớn hơn 0.")
@@ -265,7 +120,7 @@ def reciprocal_rank_fusion(
         raise ValueError("RRF rank phải bắt đầu từ 1.")
 
     all_candidate_indices = set(dense_ranks.keys()) | set(bm25_ranks.keys())
-    rrf_scores: dict[int, float] = {}
+    rrf_scores: dict[Any, float] = {}
 
     for doc_idx in all_candidate_indices:
         score = 0.0
@@ -276,40 +131,6 @@ def reciprocal_rank_fusion(
         rrf_scores[doc_idx] = score
 
     return rrf_scores
-
-
-@dataclass
-class RetrievalCandidate:
-    """Cấu trúc dữ liệu đại diện cho một ứng viên truy xuất với hệ thống điểm phân tầng."""
-
-    chunk_id: str
-    document_id: str
-    source: str
-    page: int | None = None
-    section: str | None = None
-    text: str = ""
-    dense_score: float = 0.0
-    dense_rank: int | None = None
-    bm25_score: float = 0.0
-    bm25_rank: int | None = None
-    rrf_score: float = 0.0
-    reranker_score: float | None = None
-    evidence_score: float = 0.0
-    gate_passed: bool = False
-    source_path: str = ""
-    document_version: str = ""
-    policy_key: str = ""
-    policy_status: str = ""
-    department: str = ""
-    allowed_groups: tuple[str, ...] = ()
-    security_scope: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        """Chuyển đổi thành từ điển JSON-serializable."""
-        data = asdict(self)
-        data["score"] = self.evidence_score
-        data["retrieval_score"] = self.evidence_score
-        return data
 
 
 class CrossEncoderReranker:
@@ -400,18 +221,15 @@ class CrossEncoderReranker:
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Lỗi trong quá trình suy luận Cross-Encoder: %s", exc)
 
-        # Không dùng điểm dự phòng heuristic như điểm bằng chứng neural. Điểm này
-        # chỉ giữ thứ tự ổn định cho đường cơ sở/gỡ lỗi; service sẽ trả evidence-only.
+        # Không tự tạo điểm neural giả. Giữ RRF để debug/baseline, còn service
+        # sẽ chuyển sang sources_only vì evidence gate cần raw logit của model.
         for cand in candidates:
             rrf_sc = float(cand.get("rrf_score", 0.0))
-            overlap_sc = lexical_overlap(query, str(cand.get("text", "")))
-            fallback_score = rrf_sc + overlap_sc
-            sc = round(fallback_score, 6)
             cand["reranker_score"] = None  # Không gán neural score giả
             cand["reranker_logit"] = None
-            cand["evidence_score"] = sc
-            cand["rerank_score"] = sc
-            cand["retrieval_score"] = sc
+            cand["evidence_score"] = rrf_sc
+            cand["rerank_score"] = None
+            cand["retrieval_score"] = rrf_sc
 
         candidates.sort(key=lambda item: item["evidence_score"], reverse=True)
         return candidates[:top_k]

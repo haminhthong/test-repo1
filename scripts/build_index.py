@@ -1,4 +1,4 @@
-"""CLI chính thức cho immutable index release."""
+"""CLI xây dựng artifact Dense/BM25 hiện hành."""
 
 from __future__ import annotations
 

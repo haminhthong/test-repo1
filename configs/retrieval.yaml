@@ -1,9 +1,0 @@
-version: retrieval-v1
-dense_k: 30
-sparse_k: 30
-rrf_k: 60
-rerank_candidates: 20
-context_k: 4
-reranker_model: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
-evidence_gate_threshold: 1.72
-acl_mode: pre_retrieval_shards

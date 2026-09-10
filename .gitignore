@@ -8,11 +8,6 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
-mlruns/
 data/raw/*
-data/processed/*
-models/*
-indexes/*
-reports/*.json
-reports/*.csv
-feedback/
+artifacts/*
+reports/*

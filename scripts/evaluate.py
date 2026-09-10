@@ -1,4 +1,4 @@
-"""Chạy lựa chọn pipeline và tune threshold chỉ trên Dev."""
+"""Chạy calibration trên dev và báo cáo cuối trên test đã khóa."""
 
 from __future__ import annotations
 

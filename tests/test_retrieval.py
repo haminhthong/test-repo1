@@ -14,8 +14,6 @@ from src.evaluate import (
 from src.ranking import (
     BM25Index,
     CrossEncoderReranker,
-    bm25_score_single,
-    hybrid_score,
     reciprocal_rank_fusion,
     tokenize,
 )
@@ -31,21 +29,9 @@ def test_tokenize_vietnamese_text():
     assert "phép" in tokens
 
 
-def test_bm25_score_calculation():
-    """Kiểm tra tính toán điểm BM25 cho câu chứa từ khóa."""
-    query_tokens = ["bảo", "mật"]
-    doc_tokens_relevant = ["hướng", "dẫn", "bảo", "mật", "thông", "tin"]
-    doc_tokens_irrelevant = ["chính", "sách", "nghỉ", "phép", "năm"]
-
-    score_rel = bm25_score_single(query_tokens, doc_tokens_relevant)
-    score_irrel = bm25_score_single(query_tokens, doc_tokens_irrelevant)
-
-    assert score_rel > score_irrel
-    assert score_irrel == 0.0
-
-
 def test_bm25_index_corpus_search():
     """Kiểm tra BM25Index tìm kiếm chính xác từ khóa trong corpus."""
+    pytest.importorskip("rank_bm25")
     docs = [
         "Chính sách nghỉ phép nhân viên 12 ngày một năm",
         "Quy định bật xác thực 2FA cho mọi tài khoản công ty",
@@ -89,17 +75,6 @@ def test_cross_encoder_reranker_fallback_scoring():
     assert "evidence_score" in reranked[0]
     assert reranked[0]["evidence_score"] >= reranked[1]["evidence_score"]
     assert reranked[0]["text"].startswith("Chính sách nghỉ phép")
-
-
-def test_hybrid_score_boundaries():
-    """Kiểm tra biên của điểm số hybrid_score."""
-    with pytest.raises(ValueError, match="dense_weight"):
-        hybrid_score(0.8, 0.5, dense_weight=1.5)
-
-    with pytest.raises(ValueError, match="dense_weight"):
-        hybrid_score(0.8, 0.5, dense_weight=-0.1)
-
-    assert hybrid_score(1.0, 1.0, dense_weight=0.8) == 1.0
 
 
 def test_benchmark_contains_independent_dev_and_test_splits():

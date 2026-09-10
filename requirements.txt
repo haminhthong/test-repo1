@@ -3,10 +3,8 @@ uvicorn[standard]==0.35.0
 pydantic==2.11.7
 sentence-transformers==5.1.0
 faiss-cpu==1.11.0.post1
-scikit-learn>=1.6.0
 pypdf==5.9.0
 python-docx==1.2.0
-beautifulsoup4==4.13.4
 requests==2.32.5
 PyYAML==6.0.2
 numpy==2.2.6

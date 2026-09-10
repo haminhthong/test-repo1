@@ -8,16 +8,24 @@ from src.config import IndexConfig
 from src.ingestion import (
     Chunk,
     chunk_text,
-    generate_document_id,
     structure_aware_chunk,
 )
-from src.ranking import hybrid_score, lexical_overlap
 
 
 def test_chunking_keeps_source_and_metadata():
     """Kiểm tra việc chia chunk bảo toàn đúng metadata nguồn và độ dài."""
     text = " ".join(["từ_mẫu"] * 600)
-    chunks = chunk_text(text, source="doc_test.txt", page=1, chunk_words=100, overlap_words=10)
+    chunks = chunk_text(
+        text,
+        source="doc_test.txt",
+        source_path="hr/doc_test.txt",
+        document_id="doc-test",
+        document_version="v1",
+        page=1,
+        chunk_words=100,
+        overlap_words=10,
+        strategy="sliding_window",
+    )
 
     assert len(chunks) > 1
     for chunk in chunks:
@@ -44,19 +52,10 @@ def test_index_config_validation():
         IndexConfig(strategy="invalid_strategy").validate()
 
 
-def test_hybrid_ranking_rewards_exact_query_terms():
-    """Kiểm tra thuật toán Lexical Overlap ưu tiên các đoạn chứa chính xác từ khóa."""
-    query = "báo sự cố bảo mật"
-    doc_match = "Nhân viên phải báo sự cố bảo mật trong vòng 30 phút"
-    doc_unrelated = "Quy trình thanh toán và nộp hoàn ứng chi phí công tác"
-
-    exact_score = lexical_overlap(query, doc_match)
-    unrelated_score = lexical_overlap(query, doc_unrelated)
-
-    assert exact_score > unrelated_score
-    assert hybrid_score(0.5, exact_score, dense_weight=0.8) > hybrid_score(
-        0.5, unrelated_score, dense_weight=0.8
-    )
+def test_chunking_requires_catalog_identity():
+    """Chunk không được tự suy luận document identity từ tên file."""
+    with pytest.raises(ValueError, match="document_id"):
+        chunk_text("Nội dung chính sách đủ dài để kiểm tra", source="doc.txt")
 
 
 def test_structure_aware_chunking_extracts_sections():
@@ -77,6 +76,8 @@ def test_structure_aware_chunking_extracts_sections():
         page=1,
         target_words=30,
         overlap_words=5,
+        document_id="leave-policy",
+        document_version="v2026",
     )
 
     assert len(chunks) >= 2
@@ -84,30 +85,63 @@ def test_structure_aware_chunking_extracts_sections():
     assert any("Quyền lợi nghỉ phép" in (s or "") for s in sections)
     assert any("Quy trình đăng ký" in (s or "") for s in sections)
 
-    # Kiểm tra chunk_id có định dạng chuẩn: doc_id:p1:c000
+    # ID luôn chứa document, version, section hash và thứ tự chunk.
     for idx, c in enumerate(chunks):
-        assert c.chunk_id.endswith(f":p1:c{idx:03d}")
-        assert c.document_id == generate_document_id("hr/policy_leave.txt")
+        assert c.chunk_id.startswith("leave-policy:v2026:")
+        assert c.chunk_id.endswith(f":c{idx:03d}")
+        assert c.document_id == "leave-policy"
         assert c.content_hash != ""
+
+
+def test_chunk_ids_continue_across_document_pages():
+    """Chunk ở các page khác nhau không được quay lại index 0."""
+    page_text = "Nhân viên được hưởng quyền lợi theo chính sách hiện hành. " * 8
+    first_page = chunk_text(
+        page_text,
+        source="policy.pdf",
+        source_path="hr/policy.pdf",
+        document_id="policy",
+        document_version="v1",
+        page=1,
+        chunk_words=20,
+        overlap_words=4,
+        base_chunk_index=0,
+    )
+    second_page = chunk_text(
+        page_text,
+        source="policy.pdf",
+        source_path="hr/policy.pdf",
+        document_id="policy",
+        document_version="v1",
+        page=2,
+        chunk_words=20,
+        overlap_words=4,
+        base_chunk_index=len(first_page),
+    )
+    assert set(chunk.chunk_id for chunk in first_page).isdisjoint(
+        chunk.chunk_id for chunk in second_page
+    )
 
 
 def test_chunk_id_collision_resistance_across_directories():
     """Kiểm tra hai file cùng tên nhưng khác thư mục có document_id và chunk_id khác nhau."""
-    doc_id_hr = generate_document_id("hr/policy.pdf")
-    doc_id_fin = generate_document_id("finance/policy.pdf")
-
-    assert doc_id_hr != doc_id_fin
+    doc_id_hr = "hr-policy"
+    doc_id_fin = "finance-policy"
 
     chunk_hr = Chunk(
-        chunk_id=f"{doc_id_hr}:p1:c001",
+        chunk_id=f"{doc_id_hr}:v1:section:c001",
         text="Quy định nhân sự",
         source="policy.pdf",
+        document_id=doc_id_hr,
+        document_version="v1",
         source_path="hr/policy.pdf",
     )
     chunk_fin = Chunk(
-        chunk_id=f"{doc_id_fin}:p1:c001",
+        chunk_id=f"{doc_id_fin}:v1:section:c001",
         text="Quy định tài chính",
         source="policy.pdf",
+        document_id=doc_id_fin,
+        document_version="v1",
         source_path="finance/policy.pdf",
     )
 
@@ -120,55 +154,36 @@ def test_chunk_quality_contract_validation():
     from src.ingestion import validate_chunk_quality_contract
 
     valid_chunks = [
-        Chunk(chunk_id="doc1:p0:c000", text="Nội dung 1", source="doc1.txt"),
-        Chunk(chunk_id="doc1:p0:c001", text="Nội dung 2", source="doc1.txt"),
+        Chunk(
+            chunk_id="doc1:v1:common:c000",
+            text="Nội dung 1",
+            source="doc1.txt",
+            document_id="doc1",
+            document_version="v1",
+            source_path="doc1.txt",
+        ),
+        Chunk(
+            chunk_id="doc1:v1:common:c001",
+            text="Nội dung 2",
+            source="doc1.txt",
+            document_id="doc1",
+            document_version="v1",
+            source_path="doc1.txt",
+        ),
     ]
     report = validate_chunk_quality_contract(valid_chunks)
     assert report["passed"] is True
 
     # Trường hợp vi phạm: Chunk rỗng
     invalid_chunks = [
-        Chunk(chunk_id="doc1:p0:c000", text="   ", source="doc1.txt"),
+        Chunk(
+            chunk_id="doc1:v1:common:c000",
+            text="   ",
+            source="doc1.txt",
+            document_id="doc1",
+            document_version="v1",
+            source_path="doc1.txt",
+        ),
     ]
-    with pytest.raises(ValueError, match="Chunk Quality Contract"):
+    with pytest.raises(ValueError, match="chất lượng chunk"):
         validate_chunk_quality_contract(invalid_chunks)
-
-
-def test_detect_corpus_changes_logic():
-    """Kiểm tra phát hiện tài liệu mới, sửa đổi, giữ nguyên và bị xóa."""
-    import tempfile
-    from pathlib import Path
-
-    from src.index import detect_corpus_changes
-    from src.utils import compute_file_checksum
-
-    with tempfile.TemporaryDirectory() as tmp_dir_str:
-        tmp_path = Path(tmp_dir_str)
-
-        doc1 = tmp_path / "doc1.txt"
-        doc1.write_text("Phiên bản 1", encoding="utf-8")
-        hash1 = compute_file_checksum(doc1)
-
-        registry = {
-            "doc1.txt": {
-                "document_id": "doc1",
-                "checksum": hash1,
-                "status": "ACTIVE",
-            },
-            "deleted_doc.txt": {
-                "document_id": "del_doc",
-                "checksum": "abc123",
-                "status": "ACTIVE",
-            },
-        }
-
-        # Thêm doc2 mới
-        doc2 = tmp_path / "doc2.txt"
-        doc2.write_text("Tài liệu mới", encoding="utf-8")
-
-        changes = detect_corpus_changes(tmp_path, registry)
-        assert len(changes["new"]) == 1
-        assert changes["new"][0].name == "doc2.txt"
-        assert len(changes["unchanged"]) == 1
-        assert changes["unchanged"][0].name == "doc1.txt"
-        assert changes["deleted"] == ["deleted_doc.txt"]

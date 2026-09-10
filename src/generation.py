@@ -1,4 +1,4 @@
-"""Grounded generation, evidence-only fallback và citation contract."""
+"""Grounded generation, sources-only fallback và citation contract."""
 
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ def format_context_for_prompt(
     return "\n\n".join(context_blocks)
 
 
-def format_context_for_fallback(hits: list[dict[str, Any]], max_chunks: int = 4) -> str:
-    """Định dạng evidence-only response với citation ID ổn định."""
+def format_sources_only(hits: list[dict[str, Any]], max_chunks: int = 4) -> str:
+    """Định dạng response chỉ nguồn với citation ID ổn định."""
     blocks: list[str] = []
     for index, hit in enumerate(hits[:max_chunks], start=1):
         source = str(hit.get("source", "Không rõ nguồn"))
@@ -69,11 +69,6 @@ def format_context_for_fallback(hits: list[dict[str, Any]], max_chunks: int = 4)
             f"[C{index}] [Nguồn: {source}{page}{section}]\n{str(hit.get('text', '')).strip()}"
         )
     return "\n\n".join(blocks)
-
-
-def format_context(hits: list[dict[str, Any]], max_chunks: int = 4) -> str:
-    """Bí danh tương thích ngược; ngữ nghĩa hiện tại là evidence-only."""
-    return format_context_for_fallback(hits, max_chunks=max_chunks)
 
 
 def _citation_payload(cid: int, hit: dict[str, Any]) -> dict[str, Any]:
@@ -147,22 +142,13 @@ def validate_citation_references(
     return citations, citation_valid, metadata
 
 
-def validate_citations(
-    answer: str, hits: list[dict[str, Any]], max_chunks: int = 4
-) -> tuple[list[dict[str, Any]], bool]:
-    """Wrapper tương thích ngược cho citation validator."""
-    citations, is_valid, _ = validate_citation_references(answer, hits, max_chunks=max_chunks)
-    return citations, is_valid
-
-
 def _evidence_only_result(
     active_hits: list[dict[str, Any]], reason: str, max_chunks: int
 ) -> tuple[str, list[dict[str, Any]], bool, dict[str, Any]]:
     answer = (
-        "Dưới đây là các trích đoạn bằng chứng liên quan; "
-        "hệ thống chưa tạo câu trả lời tổng hợp:\n\n"
+        "Dưới đây là các trích đoạn nguồn liên quan; hệ thống chưa tạo câu trả lời tổng hợp:\n\n"
     )
-    answer += format_context_for_fallback(active_hits, max_chunks=max_chunks)
+    answer += format_sources_only(active_hits, max_chunks=max_chunks)
     citations = [
         _citation_payload(index, hit) for index, hit in enumerate(active_hits[:max_chunks], start=1)
     ]
@@ -176,7 +162,7 @@ def _evidence_only_result(
             "citation_reference_validity": True,
             "factual_sentence_citation_coverage": 1.0,
             "citation_coverage": 1.0,
-            "action": "EVIDENCE_ONLY",
+            "action": "sources_only",
             "reason": reason,
         },
     )
@@ -200,7 +186,7 @@ def generate_grounded_response(
                 "citation_reference_validity": False,
                 "factual_sentence_citation_coverage": 0.0,
                 "citation_coverage": 0.0,
-                "action": "ABSTAIN",
+                "action": "abstain",
                 "reason": "NO_EVIDENCE_FOUND",
             },
         )
@@ -220,7 +206,7 @@ def generate_grounded_response(
                 "citation_reference_validity": False,
                 "factual_sentence_citation_coverage": 0.0,
                 "citation_coverage": 0.0,
-                "action": "ABSTAIN",
+                "action": "abstain",
                 "reason": "INSUFFICIENT_EVIDENCE",
             },
         )
@@ -269,7 +255,7 @@ def generate_grounded_response(
                 "citation_reference_validity": False,
                 "factual_sentence_citation_coverage": 0.0,
                 "citation_coverage": 0.0,
-                "action": "ABSTAIN",
+                "action": "abstain",
                 "reason": "LLM_ABSTAINED",
             },
         )
@@ -286,13 +272,7 @@ def generate_grounded_response(
         {
             "evidence_gate_passed": True,
             **citation_meta,
-            "action": "ANSWER",
+            "action": "answer",
             "reason": "SUFFICIENT_VALIDATED_EVIDENCE",
         },
     )
-
-
-def generate_answer(question: str, hits: list[dict[str, Any]]) -> str:
-    """Wrapper tương thích ngược."""
-    answer, _, _, _ = generate_grounded_response(question, hits, max_chunks=4)
-    return answer

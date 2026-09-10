@@ -1,8 +1,4 @@
-"""Cấu hình bất biến cho pipeline xây dựng chỉ mục.
-
-Các giá trị runtime quan trọng được ghi vào artifact của từng release. Vì vậy
-CLI phải tạo một cấu hình mới thay vì sửa một dataclass đã bị đóng băng.
-"""
+"""Cấu hình runtime dùng chung cho ingestion, retrieval và evaluation."""
 
 from __future__ import annotations
 
@@ -15,12 +11,12 @@ DEFAULT_EVIDENCE_GATE_THRESHOLD = 1.72
 
 @dataclass(frozen=True)
 class IndexConfig:
-    """Cấu hình ingest, catalog và phát hành index.
+    """Cấu hình ingest, catalog và truy xuất.
 
     Attributes:
         data_dir (str): Thư mục chứa dữ liệu tài liệu đầu vào (TXT, MD, PDF, DOCX).
-        model_dir (str): Thư mục gốc lưu các release bất biến và con trỏ active.
-        catalog_path (str): Catalog là nguồn sự thật về version và ACL.
+        model_dir (str): Thư mục artifact hiện hành được retriever đọc trực tiếp.
+        catalog_path (str): Catalog là nguồn sự thật về version, ngày hiệu lực và ACL.
         chunk_words (int): Số lượng từ mục tiêu trong một chunk tài liệu.
         overlap_words (int): Số lượng từ gối đầu (overlap) giữa 2 chunk liền kề.
         strategy (str): Chiến lược chunking ("structure_aware" hoặc "sliding_window").
@@ -29,12 +25,11 @@ class IndexConfig:
         candidate_pool_k (int): Số ứng viên lấy từ mỗi nhánh Dense/BM25.
         rrf_k (int): Hằng số điều chỉnh Reciprocal Rank Fusion.
         rerank_top_k (int): Số ứng viên giữ lại sau reranking.
-        evidence_gate_threshold (float): Ngưỡng raw reranker logit được tune trên Dev.
-        use_reranker (bool): Có kích hoạt multilingual reranker hay không.
+        evidence_gate_threshold (float): Ngưỡng raw logit mặc định, cần calibrate trên Dev.
     """
 
     data_dir: str = "data/raw"
-    model_dir: str = "models/rag_index"
+    model_dir: str = "artifacts"
     catalog_path: str = "configs/knowledge_catalog.yaml"
     chunk_words: int = 250
     overlap_words: int = 40
@@ -46,7 +41,6 @@ class IndexConfig:
     rerank_top_k: int = 20
     context_k: int = 4
     evidence_gate_threshold: float = DEFAULT_EVIDENCE_GATE_THRESHOLD
-    use_reranker: bool = True
 
     def validate(self) -> None:
         """Xác thực tính hợp lệ của thông số cấu hình.
@@ -83,7 +77,7 @@ def parse_args() -> IndexConfig:
         IndexConfig: Đối tượng cấu hình đã qua xác thực.
     """
     parser = argparse.ArgumentParser(
-        description="Xây dựng FAISS Index và BM25 Index cho Vietnamese Evidence-Grounded RAG Assistant"
+        description="Xây dựng artifact Dense + BM25 cho Vietnamese Policy RAG"
     )
     parser.add_argument(
         "--data-dir",
@@ -94,8 +88,8 @@ def parse_args() -> IndexConfig:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="models/rag_index",
-        help="Thư mục gốc lưu release và active pointer (mặc định: models/rag_index)",
+        default="artifacts",
+        help="Thư mục artifact hiện hành (mặc định: artifacts)",
     )
     parser.add_argument(
         "--catalog-path",
@@ -134,12 +128,6 @@ def parse_args() -> IndexConfig:
         default=30,
         help="Kích thước candidate pool trích xuất từ mỗi nhánh (mặc định: 30)",
     )
-    parser.add_argument(
-        "--no-reranker",
-        action="store_true",
-        help="Tắt multilingual reranker (chỉ dùng cho baseline/evaluation)",
-    )
-
     args = parser.parse_args()
     config = IndexConfig(
         data_dir=args.data_dir,
@@ -150,7 +138,6 @@ def parse_args() -> IndexConfig:
         strategy=args.strategy,
         embedding_model=args.embedding_model,
         candidate_pool_k=args.candidate_pool_k,
-        use_reranker=not args.no_reranker,
     )
     config.validate()
     return config
